@@ -12,8 +12,11 @@ fn arb_tenant_id() -> impl Strategy<Value = TenantId> {
 }
 
 fn arb_envelope() -> impl Strategy<Value = Envelope> {
-    (arb_tenant_id(), any::<u64>(), arb_payload())
-        .prop_map(|(tenant_id, seq, payload)| Envelope { tenant_id, seq, payload })
+    (arb_tenant_id(), any::<u64>(), arb_payload()).prop_map(|(tenant_id, seq, payload)| Envelope {
+        tenant_id,
+        seq,
+        payload,
+    })
 }
 
 fn tid() -> TenantId {
