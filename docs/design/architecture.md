@@ -125,7 +125,7 @@ graph TB
 **Key properties:**
 
 - Model cannot forge valid HMAC — it never sees the key
-- Canonical serialization uses u32 BE length-prefix per field (not null-byte separators — that was the P1 fix)
+- Canonical serialization uses u32 BE length-prefix per field (deterministic, no ambiguity)
 - Constant-time comparison via `subtle::ConstantTimeEq` (no timing side-channels)
 - Key zeroization on drop via `zeroize`
 
