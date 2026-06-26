@@ -14,7 +14,10 @@ fn arb_role() -> impl Strategy<Value = Role> {
 }
 
 fn arb_message() -> impl Strategy<Value = ChatMessage> {
-    (arb_role(), ".*").prop_map(|(role, content)| ChatMessage::new(role, content))
+    prop_oneof![
+        (arb_role(), ".*").prop_map(|(role, content)| ChatMessage::new(role, content)),
+        ("[a-z0-9_]{1,20}", ".*").prop_map(|(id, content)| ChatMessage::tool_result(id, content)),
+    ]
 }
 
 fn arb_model_id() -> impl Strategy<Value = ModelId> {
@@ -108,6 +111,15 @@ fn message_constructors() {
     let tool = ChatMessage::tool(r#"{"result": 42}"#);
     assert_eq!(tool.role, Role::Tool);
     assert_eq!(tool.content, r#"{"result": 42}"#);
+    assert!(tool.tool_call_id.is_none());
+}
+
+#[test]
+fn tool_result_constructor() {
+    let msg = ChatMessage::tool_result("call_123", r#"{"result": 42}"#);
+    assert_eq!(msg.role, Role::Tool);
+    assert_eq!(msg.content, r#"{"result": 42}"#);
+    assert_eq!(msg.tool_call_id.as_deref(), Some("call_123"));
 }
 
 #[test]
@@ -274,10 +286,11 @@ proptest! {
     }
 
     #[test]
-    fn message_clone_preserves_role(msg in arb_message()) {
+    fn message_clone_preserves_fields(msg in arb_message()) {
         let cloned = msg.clone();
         prop_assert_eq!(msg.role, cloned.role);
         prop_assert_eq!(msg.content, cloned.content);
+        prop_assert_eq!(msg.tool_call_id, cloned.tool_call_id);
     }
 
     #[test]

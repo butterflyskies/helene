@@ -18,6 +18,8 @@ pub enum Role {
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
+    /// For [`Role::Tool`] messages, the ID of the tool call this result belongs to.
+    pub tool_call_id: Option<String>,
 }
 
 /// A tool available to the model during inference.
@@ -129,6 +131,7 @@ impl ChatMessage {
         Self {
             role,
             content: content.into(),
+            tool_call_id: None,
         }
     }
 
@@ -146,6 +149,15 @@ impl ChatMessage {
 
     pub fn tool(content: impl Into<String>) -> Self {
         Self::new(Role::Tool, content)
+    }
+
+    /// Create a tool-result message tied to a specific tool call.
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            tool_call_id: Some(tool_call_id.into()),
+        }
     }
 }
 
