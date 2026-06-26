@@ -9,7 +9,6 @@ use super::{Message, MessageVerifier, SignedMessage, VerifyError};
 
 type HmacSha256 = Hmac<Sha256>;
 
-#[non_exhaustive]
 pub struct HmacVerifier {
     key: Vec<u8>,
 }
