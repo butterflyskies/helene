@@ -8,7 +8,7 @@ fn arb_payload() -> impl Strategy<Value = Vec<u8>> {
 }
 
 fn arb_tenant_id() -> impl Strategy<Value = TenantId> {
-    "[a-z0-9]{1,16}".prop_map(TenantId)
+    "[a-z0-9]{1,16}".prop_map(TenantId::from)
 }
 
 fn arb_envelope() -> impl Strategy<Value = Envelope> {
@@ -20,7 +20,7 @@ fn arb_envelope() -> impl Strategy<Value = Envelope> {
 }
 
 fn tid() -> TenantId {
-    TenantId("test".into())
+    TenantId::from("test")
 }
 
 fn rt() -> tokio::runtime::Runtime {
@@ -189,7 +189,7 @@ fn connect_disconnect_lifecycle() {
 
         let id = a.connect().await.unwrap();
         assert!(a.is_connected());
-        assert_eq!(id, ConnectionId("mock-a".into()));
+        assert_eq!(id, ConnectionId::from("mock-a"));
 
         a.disconnect().await.unwrap();
         assert!(!a.is_connected());
@@ -270,7 +270,7 @@ fn concurrent_sends_all_arrive() {
             let sender = a.clone();
             handles.push(tokio::spawn(async move {
                 let env = Envelope {
-                    tenant_id: TenantId("test".into()),
+                    tenant_id: TenantId::from("test"),
                     seq: i,
                     payload: vec![i as u8],
                 };
@@ -287,4 +287,145 @@ fn concurrent_sends_all_arrive() {
         seqs.sort();
         assert_eq!(seqs, (0..n).collect::<Vec<_>>());
     });
+}
+
+// ── drain-after-disconnect test ──────────────────────────────────
+
+#[test]
+fn drain_after_disconnect() {
+    let rt = rt();
+    rt.block_on(async {
+        let (mut a, mut b) = MockTransport::pair(tid());
+        a.connect().await.unwrap();
+        b.connect().await.unwrap();
+
+        // Buffer several messages before disconnecting the sender
+        let envelopes: Vec<Envelope> = (0..5)
+            .map(|i| Envelope {
+                tenant_id: tid(),
+                seq: i,
+                payload: vec![i as u8],
+            })
+            .collect();
+
+        for env in &envelopes {
+            a.send(env).await.unwrap();
+        }
+
+        // Sender disconnects — drops tx, but messages are already buffered
+        a.disconnect().await.unwrap();
+
+        // Receiver should still be able to drain all buffered messages
+        for expected in &envelopes {
+            let received = b.recv().await.unwrap();
+            assert_eq!(&received, expected);
+        }
+
+        // After draining, the next recv should see the closed channel
+        assert_eq!(b.recv().await, Err(TransportError::ConnectionClosed));
+    });
+}
+
+// ── backpressure test ────────────────────────────────────────────
+
+#[test]
+fn backpressure_when_buffer_full() {
+    let rt = rt();
+    rt.block_on(async {
+        // Use a tiny buffer to make backpressure observable
+        let (mut a, mut b) = MockTransport::pair_with_buffer(tid(), 2);
+        a.connect().await.unwrap();
+        b.connect().await.unwrap();
+
+        // Fill the buffer exactly
+        for i in 0..2u64 {
+            let env = Envelope {
+                tenant_id: tid(),
+                seq: i,
+                payload: vec![i as u8],
+            };
+            a.send(&env).await.unwrap();
+        }
+
+        // The third send should block because the buffer is full.
+        // Use try_send semantics via a timeout to verify backpressure
+        // without actually deadlocking the test.
+        let sender = std::sync::Arc::new(a);
+        let sender_clone = sender.clone();
+        let send_handle = tokio::spawn(async move {
+            let env = Envelope {
+                tenant_id: TenantId::from("test"),
+                seq: 2,
+                payload: vec![2],
+            };
+            sender_clone.send(&env).await
+        });
+
+        // Give the send a moment to (not) complete — it should be blocked
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !send_handle.is_finished(),
+            "send should block when buffer is full"
+        );
+
+        // Drain one message to free a slot
+        let received = b.recv().await.unwrap();
+        assert_eq!(received.seq, 0);
+
+        // Now the blocked send should complete
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), send_handle)
+            .await
+            .expect("send should unblock after drain")
+            .expect("task should not panic");
+        assert!(
+            result.is_ok(),
+            "send should succeed after buffer space freed"
+        );
+
+        // Drain remaining messages
+        assert_eq!(b.recv().await.unwrap().seq, 1);
+        assert_eq!(b.recv().await.unwrap().seq, 2);
+    });
+}
+
+// ── mock transport accessors ─────────────────────────────────────
+
+#[test]
+fn mock_transport_tenant_id() {
+    let tenant = TenantId::from("acme");
+    let (a, b) = MockTransport::pair(tenant);
+    assert_eq!(a.tenant_id().as_str(), "acme");
+    assert_eq!(b.tenant_id().as_str(), "acme");
+}
+
+// ── newtype accessor tests ───────────────────────────────────────
+
+#[test]
+fn connection_id_accessors() {
+    let id = ConnectionId::from("conn-42");
+    assert_eq!(id.as_str(), "conn-42");
+    assert_eq!(id.to_string(), "conn-42");
+
+    let id_from_string = ConnectionId::from(String::from("conn-99"));
+    assert_eq!(id_from_string.as_str(), "conn-99");
+}
+
+#[test]
+fn tenant_id_accessors() {
+    let id = TenantId::from("tenant-abc");
+    assert_eq!(id.as_str(), "tenant-abc");
+    assert_eq!(id.to_string(), "tenant-abc");
+
+    let id_from_string = TenantId::from(String::from("tenant-xyz"));
+    assert_eq!(id_from_string.as_str(), "tenant-xyz");
+}
+
+#[test]
+fn envelope_tenant_id_accessor() {
+    let env = Envelope {
+        tenant_id: TenantId::from("t1"),
+        seq: 42,
+        payload: vec![1, 2, 3],
+    };
+    assert_eq!(env.tenant_id().as_str(), "t1");
 }
