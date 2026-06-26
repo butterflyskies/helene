@@ -25,11 +25,6 @@ pub enum SessionError {
     #[error("provider error: {0}")]
     Provider(#[from] crate::provider::ProviderError),
 
-    #[error("session not connected")]
-    NotConnected,
-
-    #[error("serialization error: {0}")]
-    Serialization(String),
 }
 
 /// Orchestrates the verified message lifecycle.

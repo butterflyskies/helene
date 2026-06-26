@@ -237,6 +237,16 @@ async fn health_reports_connected() {
 }
 
 #[tokio::test]
+async fn health_reports_disconnected() {
+    let mut host = test_host();
+    host.register_tenant(test_config()).await.unwrap();
+    host.set_connected(false);
+
+    let health = host.health(&TenantId("lain".into())).await.unwrap();
+    assert!(!health.connected);
+}
+
+#[tokio::test]
 async fn health_unknown_tenant() {
     let host = test_host();
     let result = host.health(&TenantId("ghost".into())).await;

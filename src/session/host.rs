@@ -80,6 +80,11 @@ where
         }
     }
 
+    /// Set the connection status for health reporting.
+    pub fn set_connected(&mut self, connected: bool) {
+        self.connected = connected;
+    }
+
     /// Verify a signed message against the session's verifier.
     pub fn verify(&self, signed: &SignedMessage) -> Result<Message, SessionError> {
         self.verifier.verify(signed).map_err(SessionError::from)
