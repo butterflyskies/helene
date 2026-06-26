@@ -6,7 +6,6 @@ pub use types::{ChannelId, Message, MessageId, SignedMessage};
 
 use thiserror::Error;
 
-#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VerifyError {
     #[error("invalid signature")]

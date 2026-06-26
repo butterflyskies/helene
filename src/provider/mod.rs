@@ -8,7 +8,6 @@ pub use types::{
 use std::future::Future;
 use thiserror::Error;
 
-#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum ProviderError {
     #[error("authentication failed: {0}")]
