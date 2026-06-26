@@ -94,11 +94,7 @@ fn test_message(content: &str) -> Message {
 }
 
 fn test_config() -> SessionConfig {
-    SessionConfig::new(
-        TenantId("lain".into()),
-        ModelId::new("test-model"),
-        4096,
-    )
+    SessionConfig::new(TenantId("lain".into()), ModelId::new("test-model"), 4096)
 }
 
 fn test_host() -> InMemorySessionHost<HmacVerifier, EchoProvider> {
@@ -178,8 +174,12 @@ async fn process_message_increments_counter() {
     host.register_tenant(test_config()).await.unwrap();
     let tenant = TenantId("lain".into());
 
-    host.process_message(&tenant, test_message("one")).await.unwrap();
-    host.process_message(&tenant, test_message("two")).await.unwrap();
+    host.process_message(&tenant, test_message("one"))
+        .await
+        .unwrap();
+    host.process_message(&tenant, test_message("two"))
+        .await
+        .unwrap();
 
     let health = host.health(&tenant).await.unwrap();
     assert_eq!(health.messages_processed, 2);
@@ -194,7 +194,9 @@ async fn process_message_updates_last_message_time() {
     let health_before = host.health(&tenant).await.unwrap();
     assert!(health_before.last_message_at_millis.is_none());
 
-    host.process_message(&tenant, test_message("hi")).await.unwrap();
+    host.process_message(&tenant, test_message("hi"))
+        .await
+        .unwrap();
 
     let health_after = host.health(&tenant).await.unwrap();
     assert!(health_after.last_message_at_millis.is_some());
@@ -215,8 +217,13 @@ async fn process_appends_to_context() {
     host.register_tenant(test_config()).await.unwrap();
     let tenant = TenantId("lain".into());
 
-    host.process_message(&tenant, test_message("first")).await.unwrap();
-    let response = host.process_message(&tenant, test_message("second")).await.unwrap();
+    host.process_message(&tenant, test_message("first"))
+        .await
+        .unwrap();
+    let response = host
+        .process_message(&tenant, test_message("second"))
+        .await
+        .unwrap();
 
     match &response.content {
         ResponseContent::Text(text) => assert_eq!(text, "echo: second"),
@@ -361,10 +368,7 @@ async fn temperature_in_config() {
 
 #[tokio::test]
 async fn provider_error_propagates() {
-    let host = InMemorySessionHost::new(
-        HmacVerifier::new(b"key".to_vec()).unwrap(),
-        FailProvider,
-    );
+    let host = InMemorySessionHost::new(HmacVerifier::new(b"key".to_vec()).unwrap(), FailProvider);
     host.register_tenant(test_config()).await.unwrap();
 
     let result = host
@@ -376,14 +380,14 @@ async fn provider_error_propagates() {
 
 #[tokio::test]
 async fn tool_call_response_handling() {
-    let host = InMemorySessionHost::new(
-        HmacVerifier::new(b"key".to_vec()).unwrap(),
-        ToolProvider,
-    );
+    let host = InMemorySessionHost::new(HmacVerifier::new(b"key".to_vec()).unwrap(), ToolProvider);
     host.register_tenant(test_config()).await.unwrap();
 
     let response = host
-        .process_message(&TenantId("lain".into()), test_message("what's the weather?"))
+        .process_message(
+            &TenantId("lain".into()),
+            test_message("what's the weather?"),
+        )
         .await
         .unwrap();
 

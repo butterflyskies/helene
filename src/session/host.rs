@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::RwLock;
 
@@ -9,9 +9,7 @@ use crate::provider::{CompletionResponse, InferenceProvider, ResponseContent, Ro
 use crate::transport::TenantId;
 use crate::verify::{Message, MessageVerifier, SignedMessage};
 
-use super::{
-    ProcessResult, SessionConfig, SessionError, SessionHealth, SessionHost, SessionId,
-};
+use super::{ProcessResult, SessionConfig, SessionError, SessionHealth, SessionHost, SessionId};
 
 struct TenantSession {
     id: SessionId,
