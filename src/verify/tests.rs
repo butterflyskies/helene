@@ -116,3 +116,26 @@ fn empty_signature_is_missing() {
     };
     assert_eq!(verifier.verify(&signed), Err(VerifyError::MissingSignature));
 }
+
+#[test]
+fn null_byte_collision_prevented() {
+    let msg_a = Message {
+        channel_id: ChannelId("a\0b".into()),
+        message_id: MessageId("c".into()),
+        timestamp: 0,
+        author: "test".into(),
+        content: "hello".into(),
+    };
+    let msg_b = Message {
+        channel_id: ChannelId("a".into()),
+        message_id: MessageId("b\0c".into()),
+        timestamp: 0,
+        author: "test".into(),
+        content: "hello".into(),
+    };
+    assert_ne!(
+        msg_a.canonical_bytes(),
+        msg_b.canonical_bytes(),
+        "length-prefixed serialization must prevent null byte boundary confusion"
+    );
+}
