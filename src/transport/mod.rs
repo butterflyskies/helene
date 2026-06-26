@@ -2,6 +2,8 @@ mod types;
 
 pub use types::{ConnectionId, Envelope, TenantId};
 
+use std::future::Future;
+
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -25,12 +27,11 @@ pub enum TransportError {
 /// FIFO ordering within a single connection. The transport is agnostic
 /// to payload semantics — signing, verification, and serialization
 /// happen at higher layers.
-#[allow(async_fn_in_trait)]
 pub trait MessageTransport: Send + Sync {
-    async fn connect(&mut self) -> Result<ConnectionId, TransportError>;
-    async fn disconnect(&mut self) -> Result<(), TransportError>;
-    async fn send(&self, envelope: &Envelope) -> Result<(), TransportError>;
-    async fn recv(&self) -> Result<Envelope, TransportError>;
+    fn connect(&mut self) -> impl Future<Output = Result<ConnectionId, TransportError>> + Send;
+    fn disconnect(&mut self) -> impl Future<Output = Result<(), TransportError>> + Send;
+    fn send(&self, envelope: &Envelope) -> impl Future<Output = Result<(), TransportError>> + Send;
+    fn recv(&self) -> impl Future<Output = Result<Envelope, TransportError>> + Send;
     fn is_connected(&self) -> bool;
 }
 
