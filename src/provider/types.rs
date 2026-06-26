@@ -1,25 +1,30 @@
 use std::fmt;
 
 /// Unique identifier for a model (e.g. `claude-opus-4-20250514`).
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelId(pub String);
 
 /// A role in an inference conversation.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Role {
     System,
     User,
     Assistant,
+    Tool,
 }
 
 /// A single message in a conversation.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Message {
+pub struct ChatMessage {
     pub role: Role,
     pub content: String,
 }
 
 /// A tool available to the model during inference.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolDefinition {
     pub name: String,
@@ -29,6 +34,7 @@ pub struct ToolDefinition {
 }
 
 /// A tool invocation returned by the model.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCall {
     pub id: String,
@@ -38,6 +44,7 @@ pub struct ToolCall {
 }
 
 /// Why the model stopped generating.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StopReason {
     EndTurn,
@@ -47,6 +54,7 @@ pub enum StopReason {
 }
 
 /// Token usage statistics for a single completion.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Usage {
     pub input_tokens: u32,
@@ -54,6 +62,7 @@ pub struct Usage {
 }
 
 /// The content returned by a model completion.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResponseContent {
     Text(String),
@@ -61,16 +70,18 @@ pub enum ResponseContent {
 }
 
 /// A request to a model for completion.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletionRequest {
     pub model: ModelId,
-    pub messages: Vec<Message>,
+    pub messages: Vec<ChatMessage>,
     pub max_tokens: u32,
     pub temperature: Option<f64>,
     pub tools: Option<Vec<ToolDefinition>>,
 }
 
 /// A model's response to a completion request.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionResponse {
     pub content: ResponseContent,
@@ -93,6 +104,7 @@ impl fmt::Display for Role {
             Role::System => f.write_str("system"),
             Role::User => f.write_str("user"),
             Role::Assistant => f.write_str("assistant"),
+            Role::Tool => f.write_str("tool"),
         }
     }
 }
@@ -122,7 +134,7 @@ impl ModelId {
     }
 }
 
-impl Message {
+impl ChatMessage {
     pub fn new(role: Role, content: impl Into<String>) -> Self {
         Self {
             role,
@@ -140,6 +152,10 @@ impl Message {
 
     pub fn assistant(content: impl Into<String>) -> Self {
         Self::new(Role::Assistant, content)
+    }
+
+    pub fn tool(content: impl Into<String>) -> Self {
+        Self::new(Role::Tool, content)
     }
 }
 

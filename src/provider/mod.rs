@@ -1,13 +1,14 @@
 mod types;
 
 pub use types::{
-    CompletionRequest, CompletionResponse, Message, ModelId, ResponseContent, Role, StopReason,
+    ChatMessage, CompletionRequest, CompletionResponse, ModelId, ResponseContent, Role, StopReason,
     ToolCall, ToolDefinition, Usage,
 };
 
 use std::future::Future;
 use thiserror::Error;
 
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum ProviderError {
     #[error("authentication failed: {0}")]

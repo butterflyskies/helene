@@ -1,11 +1,14 @@
 use std::fmt;
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ChannelId(pub String);
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MessageId(pub String);
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     pub channel_id: ChannelId,
@@ -15,6 +18,7 @@ pub struct Message {
     pub content: String,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct SignedMessage {
     pub message: Message,
