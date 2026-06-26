@@ -16,7 +16,7 @@ pub struct HmacVerifier {
 impl fmt::Debug for HmacVerifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HmacVerifier")
-            .field("key", &"[redacted]")
+            .field("key", &"[REDACTED]")
             .finish()
     }
 }

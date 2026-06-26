@@ -25,6 +25,7 @@ pub enum TransportError {
 /// FIFO ordering within a single connection. The transport is agnostic
 /// to payload semantics — signing, verification, and serialization
 /// happen at higher layers.
+#[allow(async_fn_in_trait)]
 pub trait MessageTransport: Send + Sync {
     async fn connect(&mut self) -> Result<ConnectionId, TransportError>;
     async fn disconnect(&mut self) -> Result<(), TransportError>;
