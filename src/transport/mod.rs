@@ -1,6 +1,6 @@
 mod types;
 
-pub use types::{ConnectionId, Envelope};
+pub use types::{ConnectionId, Envelope, TenantId};
 
 use thiserror::Error;
 
@@ -17,9 +17,6 @@ pub enum TransportError {
 
     #[error("send failed: {0}")]
     SendFailed(String),
-
-    #[error("receive failed: {0}")]
-    ReceiveFailed(String),
 }
 
 /// Bidirectional message transport.

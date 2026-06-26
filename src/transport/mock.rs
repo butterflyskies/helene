@@ -2,40 +2,50 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{Mutex, mpsc};
 
-use super::{ConnectionId, Envelope, MessageTransport, TransportError};
+use super::{ConnectionId, Envelope, MessageTransport, TenantId, TransportError};
 
 /// In-process mock transport backed by tokio mpsc channels.
 ///
 /// Created in pairs via [`MockTransport::pair`]. Each side sends
 /// to the other's receiver, providing a bidirectional pipe with
 /// FIFO ordering guarantees matching the [`MessageTransport`] contract.
+#[allow(dead_code)]
 pub struct MockTransport {
     connected: AtomicBool,
     connection_id: String,
-    tx: mpsc::Sender<Envelope>,
+    tenant_id: TenantId,
+    tx: Option<mpsc::Sender<Envelope>>,
     rx: Mutex<mpsc::Receiver<Envelope>>,
 }
 
 impl MockTransport {
+    /// The tenant this transport belongs to.
+    #[allow(dead_code)]
+    pub fn tenant_id(&self) -> &TenantId {
+        &self.tenant_id
+    }
+
     /// Create a connected pair of mock transports.
     ///
     /// Messages sent by one side are received by the other.
     /// Both sides start in the disconnected state — call
     /// [`MessageTransport::connect`] before sending.
-    pub fn pair() -> (Self, Self) {
+    pub fn pair(tenant_id: TenantId) -> (Self, Self) {
         let (tx_a, rx_a) = mpsc::channel(256);
         let (tx_b, rx_b) = mpsc::channel(256);
         (
             Self {
                 connected: AtomicBool::new(false),
                 connection_id: "mock-a".into(),
-                tx: tx_a,
+                tenant_id: tenant_id.clone(),
+                tx: Some(tx_a),
                 rx: Mutex::new(rx_b),
             },
             Self {
                 connected: AtomicBool::new(false),
                 connection_id: "mock-b".into(),
-                tx: tx_b,
+                tenant_id,
+                tx: Some(tx_b),
                 rx: Mutex::new(rx_a),
             },
         )
@@ -47,6 +57,9 @@ impl MessageTransport for MockTransport {
         if self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::AlreadyConnected);
         }
+        if self.tx.is_none() {
+            return Err(TransportError::ConnectionClosed);
+        }
         self.connected.store(true, Ordering::SeqCst);
         Ok(ConnectionId(self.connection_id.clone()))
     }
@@ -55,6 +68,7 @@ impl MessageTransport for MockTransport {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::NotConnected);
         }
+        self.tx.take();
         self.connected.store(false, Ordering::SeqCst);
         Ok(())
     }
@@ -63,8 +77,8 @@ impl MessageTransport for MockTransport {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::NotConnected);
         }
-        self.tx
-            .send(envelope.clone())
+        let tx = self.tx.as_ref().ok_or(TransportError::ConnectionClosed)?;
+        tx.send(envelope.clone())
             .await
             .map_err(|e| TransportError::SendFailed(e.to_string()))
     }

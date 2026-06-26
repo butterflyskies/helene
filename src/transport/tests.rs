@@ -7,8 +7,17 @@ fn arb_payload() -> impl Strategy<Value = Vec<u8>> {
     prop::collection::vec(any::<u8>(), 0..=1024)
 }
 
+fn arb_tenant_id() -> impl Strategy<Value = TenantId> {
+    "[a-z0-9]{1,16}".prop_map(TenantId)
+}
+
 fn arb_envelope() -> impl Strategy<Value = Envelope> {
-    (any::<u64>(), arb_payload()).prop_map(|(seq, payload)| Envelope { seq, payload })
+    (arb_tenant_id(), any::<u64>(), arb_payload())
+        .prop_map(|(tenant_id, seq, payload)| Envelope { tenant_id, seq, payload })
+}
+
+fn tid() -> TenantId {
+    TenantId("test".into())
 }
 
 fn rt() -> tokio::runtime::Runtime {
@@ -25,7 +34,7 @@ proptest! {
     fn send_recv_roundtrip(envelope in arb_envelope()) {
         let rt = rt();
         rt.block_on(async {
-            let (mut a, mut b) = MockTransport::pair();
+            let (mut a, mut b) = MockTransport::pair(tid());
             a.connect().await.unwrap();
             b.connect().await.unwrap();
 
@@ -37,10 +46,10 @@ proptest! {
     }
 
     #[test]
-    fn message_ordering(envelopes in prop::collection::vec(arb_envelope(), 1..=32)) {
+    fn channel_fifo_order(envelopes in prop::collection::vec(arb_envelope(), 1..=32)) {
         let rt = rt();
         rt.block_on(async {
-            let (mut a, mut b) = MockTransport::pair();
+            let (mut a, mut b) = MockTransport::pair(tid());
             a.connect().await.unwrap();
             b.connect().await.unwrap();
 
@@ -59,7 +68,7 @@ proptest! {
     fn bidirectional(env_a in arb_envelope(), env_b in arb_envelope()) {
         let rt = rt();
         rt.block_on(async {
-            let (mut a, mut b) = MockTransport::pair();
+            let (mut a, mut b) = MockTransport::pair(tid());
             a.connect().await.unwrap();
             b.connect().await.unwrap();
 
@@ -79,11 +88,11 @@ proptest! {
     fn large_payload(payload in prop::collection::vec(any::<u8>(), 4096..=65536)) {
         let rt = rt();
         rt.block_on(async {
-            let (mut a, mut b) = MockTransport::pair();
+            let (mut a, mut b) = MockTransport::pair(tid());
             a.connect().await.unwrap();
             b.connect().await.unwrap();
 
-            let envelope = Envelope { seq: 0, payload };
+            let envelope = Envelope { tenant_id: tid(), seq: 0, payload };
             a.send(&envelope).await.unwrap();
             let received = b.recv().await.unwrap();
             prop_assert_eq!(received, envelope);
@@ -95,11 +104,11 @@ proptest! {
     fn empty_payload(seq in any::<u64>()) {
         let rt = rt();
         rt.block_on(async {
-            let (mut a, mut b) = MockTransport::pair();
+            let (mut a, mut b) = MockTransport::pair(tid());
             a.connect().await.unwrap();
             b.connect().await.unwrap();
 
-            let envelope = Envelope { seq, payload: vec![] };
+            let envelope = Envelope { tenant_id: tid(), seq, payload: vec![] };
             a.send(&envelope).await.unwrap();
             let received = b.recv().await.unwrap();
             prop_assert_eq!(received, envelope);
@@ -114,8 +123,9 @@ proptest! {
 fn send_before_connect() {
     let rt = rt();
     rt.block_on(async {
-        let (a, _b) = MockTransport::pair();
+        let (a, _b) = MockTransport::pair(tid());
         let envelope = Envelope {
+            tenant_id: tid(),
             seq: 0,
             payload: vec![1, 2, 3],
         };
@@ -127,7 +137,7 @@ fn send_before_connect() {
 fn recv_before_connect() {
     let rt = rt();
     rt.block_on(async {
-        let (_a, b) = MockTransport::pair();
+        let (_a, b) = MockTransport::pair(tid());
         assert_eq!(b.recv().await, Err(TransportError::NotConnected));
     });
 }
@@ -136,7 +146,7 @@ fn recv_before_connect() {
 fn double_connect() {
     let rt = rt();
     rt.block_on(async {
-        let (mut a, _b) = MockTransport::pair();
+        let (mut a, _b) = MockTransport::pair(tid());
         a.connect().await.unwrap();
         assert_eq!(a.connect().await, Err(TransportError::AlreadyConnected));
     });
@@ -146,7 +156,7 @@ fn double_connect() {
 fn disconnect_without_connect() {
     let rt = rt();
     rt.block_on(async {
-        let (mut a, _b) = MockTransport::pair();
+        let (mut a, _b) = MockTransport::pair(tid());
         assert_eq!(a.disconnect().await, Err(TransportError::NotConnected));
     });
 }
@@ -155,11 +165,12 @@ fn disconnect_without_connect() {
 fn send_after_disconnect() {
     let rt = rt();
     rt.block_on(async {
-        let (mut a, _b) = MockTransport::pair();
+        let (mut a, _b) = MockTransport::pair(tid());
         a.connect().await.unwrap();
         a.disconnect().await.unwrap();
 
         let envelope = Envelope {
+            tenant_id: tid(),
             seq: 0,
             payload: vec![],
         };
@@ -168,30 +179,20 @@ fn send_after_disconnect() {
 }
 
 #[test]
-fn connect_disconnect_reconnect() {
+fn connect_disconnect_lifecycle() {
     let rt = rt();
     rt.block_on(async {
-        let (mut a, mut b) = MockTransport::pair();
+        let (mut a, _b) = MockTransport::pair(tid());
 
-        let id1 = a.connect().await.unwrap();
+        let id = a.connect().await.unwrap();
         assert!(a.is_connected());
+        assert_eq!(id, ConnectionId("mock-a".into()));
 
         a.disconnect().await.unwrap();
         assert!(!a.is_connected());
 
-        let id2 = a.connect().await.unwrap();
-        assert!(a.is_connected());
-        assert_eq!(id1, id2);
-
-        // can still send/recv after reconnect
-        b.connect().await.unwrap();
-        let envelope = Envelope {
-            seq: 42,
-            payload: vec![0xFF],
-        };
-        a.send(&envelope).await.unwrap();
-        let received = b.recv().await.unwrap();
-        assert_eq!(received, envelope);
+        // cannot reconnect — channel was closed on disconnect
+        assert_eq!(a.connect().await, Err(TransportError::ConnectionClosed));
     });
 }
 
@@ -199,7 +200,7 @@ fn connect_disconnect_reconnect() {
 fn connection_closed_on_sender_drop() {
     let rt = rt();
     rt.block_on(async {
-        let (mut a, mut b) = MockTransport::pair();
+        let (mut a, mut b) = MockTransport::pair(tid());
         a.connect().await.unwrap();
         b.connect().await.unwrap();
 
@@ -210,10 +211,38 @@ fn connection_closed_on_sender_drop() {
 }
 
 #[test]
+fn recv_after_peer_disconnect() {
+    let rt = rt();
+    rt.block_on(async {
+        let (mut a, mut b) = MockTransport::pair(tid());
+        a.connect().await.unwrap();
+        b.connect().await.unwrap();
+
+        // peer disconnects — drops their tx, closing our rx channel
+        a.disconnect().await.unwrap();
+        assert_eq!(b.recv().await, Err(TransportError::ConnectionClosed));
+    });
+}
+
+#[test]
+fn recv_after_disconnect() {
+    let rt = rt();
+    rt.block_on(async {
+        let (mut a, mut b) = MockTransport::pair(tid());
+        a.connect().await.unwrap();
+        b.connect().await.unwrap();
+
+        // same-side disconnect — recv checks connected flag first
+        a.disconnect().await.unwrap();
+        assert_eq!(a.recv().await, Err(TransportError::NotConnected));
+    });
+}
+
+#[test]
 fn is_connected_reflects_state() {
     let rt = rt();
     rt.block_on(async {
-        let (mut a, _b) = MockTransport::pair();
+        let (mut a, _b) = MockTransport::pair(tid());
 
         assert!(!a.is_connected());
         a.connect().await.unwrap();
