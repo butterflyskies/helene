@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+env:
+  REGISTRY: ghcr.io
+  # TODO: update to your org/repo name
+  IMAGE: butterflyskies/my-project
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master (2026-02-13)
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install cargo-nextest
+        run: |
+          curl -fsSL "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.131/cargo-nextest-0.9.131-x86_64-unknown-linux-gnu.tar.gz" \
+            -o /tmp/cargo-nextest.tar.gz
+          echo "8e38b16299864c9f597c9a1e2caf25b7e8b598ffc659ec014c2c735a9befd8fa  /tmp/cargo-nextest.tar.gz" | sha256sum -c -
+          tar xzf /tmp/cargo-nextest.tar.gz -C /usr/local/bin
+      # TODO: add system dependencies if needed
+      # - run: sudo apt-get update && sudo apt-get install -y libfoo-dev
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo nextest run --workspace --no-fail-fast --no-tests=pass
+
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install cargo-audit
+        run: |
+          curl -fsSL "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv0.22.1/cargo-audit-x86_64-unknown-linux-musl-v0.22.1.tgz" \
+            -o /tmp/cargo-audit.tar.gz
+          echo "c32506f338bdcdaef5a17fb9f33abb6ecf9561324cfd34237fd335f9283a1eab  /tmp/cargo-audit.tar.gz" | sha256sum -c -
+          tar xzf /tmp/cargo-audit.tar.gz -C /usr/local/bin --strip-components=1
+      - run: cargo audit
+
+  # TODO: uncomment this job once you've set the IMAGE env var above and are
+  # ready to publish container images. Until then, test + audit run on every PR.
+  # Also uncomment the publish-image job in release.yml for semver-tagged images.
+  #
+  # build:
+  #   needs: [test, audit]
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: read
+  #     packages: write
+  #     id-token: write
+  #   steps:
+  #     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  #     - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+  #     - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+  #       with:
+  #         registry: ${{ env.REGISTRY }}
+  #         username: ${{ github.actor }}
+  #         password: ${{ secrets.GITHUB_TOKEN }}
+  #     - name: Docker meta
+  #       id: meta
+  #       uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+  #       with:
+  #         images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+  #         tags: |
+  #           type=ref,event=branch
+  #           type=sha,prefix=sha-,format=long
+  #           type=raw,value=latest,enable={{is_default_branch}}
+  #     - uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+  #       with:
+  #         context: .
+  #         push: ${{ github.event_name != 'pull_request' }}
+  #         tags: ${{ steps.meta.outputs.tags }}
+  #         labels: ${{ steps.meta.outputs.labels }}
+  #         provenance: true
+  #         sbom: true
+  #         cache-from: type=gha
+  #         cache-to: type=gha,mode=max
