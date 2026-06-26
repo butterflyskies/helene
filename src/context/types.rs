@@ -5,7 +5,6 @@ use crate::verify::Message;
 ///
 /// Preserves the original [`Message`] (with channel/message IDs, timestamp,
 /// signature provenance) alongside the [`Role`] it plays in the conversation.
-#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextMessage {
     /// The verified message from transport.
@@ -43,7 +42,6 @@ pub struct ContextMessage {
 /// let req = ctx.to_completion_request();
 /// assert_eq!(req.messages.len(), 2); // system + user
 /// ```
-#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Context {
     system_prompt: Option<String>,
