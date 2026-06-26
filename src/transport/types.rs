@@ -48,7 +48,7 @@ impl TenantId {
 
 impl From<String> for TenantId {
     fn from(s: String) -> Self {
-        Self(s.to_owned())
+        Self(s)
     }
 }
 
