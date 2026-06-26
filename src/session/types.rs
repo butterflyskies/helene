@@ -1,5 +1,4 @@
 use std::fmt;
-use std::time::Instant;
 
 use crate::provider::ModelId;
 use crate::transport::TenantId;
@@ -66,7 +65,7 @@ pub struct SessionHealth {
     pub connected: bool,
     pub messages_processed: u64,
     pub verification_failures: u64,
-    pub last_message_at: Option<Instant>,
+    pub last_message_at_millis: Option<u64>,
 }
 
 /// The result of processing an inbound message through the session pipeline.

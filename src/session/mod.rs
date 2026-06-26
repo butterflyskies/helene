@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::provider::CompletionResponse;
 use crate::transport::TenantId;
-use crate::verify::Message;
+use crate::verify::{Message, SignedMessage};
 
 #[derive(Debug, Error)]
 pub enum SessionError {
@@ -25,6 +25,8 @@ pub enum SessionError {
     #[error("provider error: {0}")]
     Provider(#[from] crate::provider::ProviderError),
 
+    #[error("tenant already exists: {0}")]
+    TenantAlreadyExists(TenantId),
 }
 
 /// Orchestrates the verified message lifecycle.
@@ -70,6 +72,9 @@ pub trait SessionHost: Send + Sync {
 
     /// List all registered tenant IDs.
     fn tenants(&self) -> impl Future<Output = Vec<TenantId>> + Send;
+
+    /// Verify a signed message against the session's verifier.
+    fn verify(&self, signed: &SignedMessage) -> Result<Message, SessionError>;
 }
 
 #[cfg(test)]

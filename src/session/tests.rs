@@ -192,12 +192,12 @@ async fn process_message_updates_last_message_time() {
     let tenant = TenantId("lain".into());
 
     let health_before = host.health(&tenant).await.unwrap();
-    assert!(health_before.last_message_at.is_none());
+    assert!(health_before.last_message_at_millis.is_none());
 
     host.process_message(&tenant, test_message("hi")).await.unwrap();
 
     let health_after = host.health(&tenant).await.unwrap();
-    assert!(health_after.last_message_at.is_some());
+    assert!(health_after.last_message_at_millis.is_some());
 }
 
 #[tokio::test]
@@ -238,7 +238,7 @@ async fn health_reports_connected() {
 
 #[tokio::test]
 async fn health_reports_disconnected() {
-    let mut host = test_host();
+    let host = test_host();
     host.register_tenant(test_config()).await.unwrap();
     host.set_connected(false);
 
@@ -307,7 +307,7 @@ async fn extract_text_response() {
         usage: Usage::new(1, 1),
     };
 
-    let result = InMemorySessionHost::<HmacVerifier, EchoProvider>::extract_result(&response);
+    let result = ProcessResult::from_response(&response);
     assert_eq!(result, ProcessResult::Response("hello back".into()));
 }
 
@@ -324,7 +324,7 @@ async fn extract_tool_call_response() {
         usage: Usage::new(1, 1),
     };
 
-    let result = InMemorySessionHost::<HmacVerifier, EchoProvider>::extract_result(&response);
+    let result = ProcessResult::from_response(&response);
     assert!(matches!(result, ProcessResult::ToolCall { name, .. } if name == "search"));
 }
 
@@ -417,4 +417,12 @@ async fn multi_tenant_isolation() {
 
     assert_eq!(health_ari.messages_processed, 1);
     assert_eq!(health_lain.messages_processed, 0);
+}
+
+#[tokio::test]
+async fn duplicate_tenant_rejected() {
+    let host = test_host();
+    host.register_tenant(test_config()).await.unwrap();
+    let result = host.register_tenant(test_config()).await;
+    assert!(matches!(result, Err(SessionError::TenantAlreadyExists(_))));
 }

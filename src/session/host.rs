@@ -1,6 +1,6 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 use tokio::sync::RwLock;
 
@@ -19,7 +19,7 @@ struct TenantSession {
     context: Context,
     messages_processed: u64,
     verification_failures: u64,
-    last_message_at: Option<Instant>,
+    last_message_at_millis: Option<u64>,
 }
 
 impl TenantSession {
@@ -37,7 +37,7 @@ impl TenantSession {
             context,
             messages_processed: 0,
             verification_failures: 0,
-            last_message_at: None,
+            last_message_at_millis: None,
         }
     }
 
@@ -48,9 +48,16 @@ impl TenantSession {
             connected,
             messages_processed: self.messages_processed,
             verification_failures: self.verification_failures,
-            last_message_at: self.last_message_at,
+            last_message_at_millis: self.last_message_at_millis,
         }
     }
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 /// In-memory session host backed by a map of tenant sessions.
@@ -63,7 +70,7 @@ pub struct InMemorySessionHost<V, P> {
     verifier: Arc<V>,
     provider: Arc<P>,
     sessions: Arc<RwLock<HashMap<TenantId, TenantSession>>>,
-    connected: bool,
+    connected: AtomicBool,
 }
 
 impl<V, P> InMemorySessionHost<V, P>
@@ -76,21 +83,22 @@ where
             verifier: Arc::new(verifier),
             provider: Arc::new(provider),
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            connected: true,
+            connected: AtomicBool::new(true),
         }
     }
 
     /// Set the connection status for health reporting.
-    pub fn set_connected(&mut self, connected: bool) {
-        self.connected = connected;
+    pub fn set_connected(&self, connected: bool) {
+        self.connected.store(connected, Ordering::Relaxed);
     }
 
-    /// Verify a signed message against the session's verifier.
-    pub fn verify(&self, signed: &SignedMessage) -> Result<Message, SessionError> {
-        self.verifier.verify(signed).map_err(SessionError::from)
-    }
-
-    /// Process a verified message: append to context, run inference, return response.
+    // Lock gap between push/build/respond is intentional: we release the write
+    // lock after pushing the message so other tenants aren't blocked during
+    // inference (which can take seconds). The read lock for building the request
+    // is sufficient since we only need an immutable snapshot of the context.
+    // A tenant's session could theoretically receive a second message between
+    // the write and read, but that's correct behavior — it just means the
+    // context includes both messages.
     async fn process_verified(
         &self,
         tenant_id: &TenantId,
@@ -104,7 +112,7 @@ where
 
             session.context.push(message, Role::User);
             session.messages_processed += 1;
-            session.last_message_at = Some(Instant::now());
+            session.last_message_at_millis = Some(now_millis());
         }
 
         let request = {
@@ -117,7 +125,6 @@ where
 
         let response = self.provider.complete(&request).await?;
 
-        // Append assistant response to context for multi-turn conversations.
         if let ResponseContent::Text(ref text) = response.content {
             let mut sessions = self.sessions.write().await;
             if let Some(session) = sessions.get_mut(tenant_id) {
@@ -148,9 +155,11 @@ where
             session.verification_failures += 1;
         }
     }
+}
 
+impl ProcessResult {
     /// Extract a process result from a completion response.
-    pub fn extract_result(response: &CompletionResponse) -> ProcessResult {
+    pub fn from_response(response: &CompletionResponse) -> Self {
         match &response.content {
             ResponseContent::ToolCalls(calls) => {
                 if let Some(call) = calls.first() {
@@ -188,9 +197,12 @@ where
         let sessions = self.sessions.clone();
         let tenant_id = config.tenant_id.clone();
         async move {
+            let mut map = sessions.write().await;
+            if map.contains_key(&tenant_id) {
+                return Err(SessionError::TenantAlreadyExists(tenant_id));
+            }
             let id = SessionId(format!("session-{}", tenant_id));
             let session = TenantSession::new(id.clone(), config);
-            let mut map = sessions.write().await;
             map.insert(tenant_id, session);
             Ok(id)
         }
@@ -216,7 +228,7 @@ where
     ) -> impl std::future::Future<Output = Result<SessionHealth, SessionError>> + Send {
         let sessions = self.sessions.clone();
         let tenant_id = tenant_id.clone();
-        let connected = self.connected;
+        let connected = self.connected.load(Ordering::Relaxed);
         async move {
             let map = sessions.read().await;
             let session = map
@@ -232,5 +244,9 @@ where
             let map = sessions.read().await;
             map.keys().cloned().collect()
         }
+    }
+
+    fn verify(&self, signed: &SignedMessage) -> Result<Message, SessionError> {
+        self.verifier.verify(signed).map_err(SessionError::from)
     }
 }
