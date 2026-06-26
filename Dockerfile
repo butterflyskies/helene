@@ -10,14 +10,14 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     cargo build --release && \
-    cp target/release/my-project /usr/local/bin/my-project
+    cp target/release/helene /usr/local/bin/helene
 
 # Stage 2: Runtime
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -u 1000 app
-COPY --from=builder /usr/local/bin/my-project /usr/local/bin/my-project
+COPY --from=builder /usr/local/bin/helene /usr/local/bin/helene
 USER app
 WORKDIR /home/app
 EXPOSE 8080
-ENTRYPOINT ["my-project"]
+ENTRYPOINT ["helene"]
