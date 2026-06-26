@@ -24,9 +24,14 @@ Two delimiter strategies were considered:
 
 ## Decision
 
-Use u32 big-endian length prefixes for each field in `canonical_bytes()`. The format
-is: `[len₁][field₁][len₂][field₂]...` where each `lenₙ` is a 4-byte big-endian
-unsigned integer.
+Use u32 big-endian length prefixes for variable-length fields in `canonical_bytes()`.
+Fixed-width numeric fields (e.g. `timestamp: u64`) are written directly as big-endian
+bytes without a length prefix — their size is known statically, so no prefix is needed
+for unambiguous parsing.
+
+The format is:
+`[len][channel_id][len][message_id][timestamp BE u64][len][author][len][content]`
+where each `len` is a 4-byte big-endian u32.
 
 ## Consequences
 
