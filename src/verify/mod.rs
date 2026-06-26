@@ -13,6 +13,9 @@ pub enum VerifyError {
 
     #[error("missing signature")]
     MissingSignature,
+
+    #[error("empty key")]
+    EmptyKey,
 }
 
 pub trait MessageVerifier: Send + Sync {

@@ -1,6 +1,7 @@
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
 
 use super::{Message, MessageVerifier, SignedMessage, VerifyError};
 
@@ -11,15 +12,25 @@ pub struct HmacVerifier {
 }
 
 impl HmacVerifier {
-    pub fn new(key: impl Into<Vec<u8>>) -> Self {
-        Self { key: key.into() }
+    pub fn new(key: impl Into<Vec<u8>>) -> Result<Self, VerifyError> {
+        let key = key.into();
+        if key.is_empty() {
+            return Err(VerifyError::EmptyKey);
+        }
+        Ok(Self { key })
     }
 
     fn compute_mac(&self, msg: &Message) -> Vec<u8> {
         let mut mac =
-            HmacSha256::new_from_slice(&self.key).expect("HMAC accepts any key length");
+            HmacSha256::new_from_slice(&self.key).expect("HMAC accepts any non-empty key");
         mac.update(&msg.canonical_bytes());
         mac.finalize().into_bytes().to_vec()
+    }
+}
+
+impl Drop for HmacVerifier {
+    fn drop(&mut self) {
+        self.key.zeroize();
     }
 }
 
