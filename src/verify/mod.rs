@@ -1,11 +1,12 @@
-mod types;
 mod hmac_verifier;
+mod types;
 
-pub use types::{ChannelId, Message, MessageId, SignedMessage};
 pub use hmac_verifier::HmacVerifier;
+pub use types::{ChannelId, Message, MessageId, SignedMessage};
 
 use thiserror::Error;
 
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VerifyError {
     #[error("invalid signature")]

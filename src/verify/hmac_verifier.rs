@@ -1,3 +1,5 @@
+use std::fmt;
+
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
@@ -7,8 +9,17 @@ use super::{Message, MessageVerifier, SignedMessage, VerifyError};
 
 type HmacSha256 = Hmac<Sha256>;
 
+#[non_exhaustive]
 pub struct HmacVerifier {
     key: Vec<u8>,
+}
+
+impl fmt::Debug for HmacVerifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HmacVerifier")
+            .field("key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl HmacVerifier {

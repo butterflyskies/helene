@@ -5,11 +5,16 @@ use super::*;
 // --- Strategy helpers ---
 
 fn arb_role() -> impl Strategy<Value = Role> {
-    prop_oneof![Just(Role::System), Just(Role::User), Just(Role::Assistant),]
+    prop_oneof![
+        Just(Role::System),
+        Just(Role::User),
+        Just(Role::Assistant),
+        Just(Role::Tool),
+    ]
 }
 
-fn arb_message() -> impl Strategy<Value = Message> {
-    (arb_role(), ".*").prop_map(|(role, content)| Message::new(role, content))
+fn arb_message() -> impl Strategy<Value = ChatMessage> {
+    (arb_role(), ".*").prop_map(|(role, content)| ChatMessage::new(role, content))
 }
 
 fn arb_model_id() -> impl Strategy<Value = ModelId> {
@@ -90,15 +95,19 @@ fn arb_completion_response() -> impl Strategy<Value = CompletionResponse> {
 
 #[test]
 fn message_constructors() {
-    let sys = Message::system("you are helpful");
+    let sys = ChatMessage::system("you are helpful");
     assert_eq!(sys.role, Role::System);
     assert_eq!(sys.content, "you are helpful");
 
-    let usr = Message::user("hello");
+    let usr = ChatMessage::user("hello");
     assert_eq!(usr.role, Role::User);
 
-    let ast = Message::assistant("hi there");
+    let ast = ChatMessage::assistant("hi there");
     assert_eq!(ast.role, Role::Assistant);
+
+    let tool = ChatMessage::tool(r#"{"result": 42}"#);
+    assert_eq!(tool.role, Role::Tool);
+    assert_eq!(tool.content, r#"{"result": 42}"#);
 }
 
 #[test]
@@ -112,6 +121,7 @@ fn role_display() {
     assert_eq!(Role::System.to_string(), "system");
     assert_eq!(Role::User.to_string(), "user");
     assert_eq!(Role::Assistant.to_string(), "assistant");
+    assert_eq!(Role::Tool.to_string(), "tool");
 }
 
 #[test]
@@ -139,7 +149,7 @@ fn usage_total_overflow_saturates() {
 fn completion_request_construction() {
     let req = CompletionRequest {
         model: ModelId::new("test-model"),
-        messages: vec![Message::user("hi")],
+        messages: vec![ChatMessage::user("hi")],
         max_tokens: 1024,
         temperature: Some(0.7),
         tools: None,
