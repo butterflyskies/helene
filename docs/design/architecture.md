@@ -45,7 +45,7 @@ graph TB
     end
 
     subgraph Envelope["Envelope — Transport"]
-        E_fields["seq: u64<br/>payload: Vec&lt;u8&gt;<br/>tenant: TenantId"]
+        E_fields["seq: u64<br/>payload: Vec&lt;u8&gt;<br/>tenant_id: TenantId<br/><i>(present in type; routing not yet implemented)</i>"]
     end
 
     subgraph Context["Context — Provider-facing"]
@@ -75,8 +75,8 @@ sequenceDiagram
 
     Discord->>Dione: message event
     Dione->>Dione: canonical_bytes() → HMAC-SHA256 sign
-    Dione->>Transport: Envelope (seq, signed payload, tenant)
-    Transport->>Verifier: deserialize → SignedMessage
+    Dione->>Transport: Envelope (seq, signed payload, tenant_id)
+    Transport->>Verifier: deserialize payload → SignedMessage
     Verifier->>Verifier: constant-time signature check
     alt valid signature
         Verifier->>Provider: Message → Context (strip Discord IDs)
@@ -135,7 +135,9 @@ graph TB
 - Per-tenant: HMAC keys, inference contexts, provider configs
 - Designed in from day one, not bolted on
 
-## Concurrency Model
+## Concurrency Model (Planned)
+
+> **Not yet implemented.** Aspirational design for the runtime layer.
 
 - Async everywhere (tokio)
 - Channels over mutexes
@@ -144,7 +146,9 @@ graph TB
 - Cancel safety throughout
 - Proper signal handling and clean shutdown
 
-## MCP Integration
+## MCP Integration (Planned)
+
+> **Not yet implemented.** Target integration surface for Dione.
 
 - Streamable HTTP transport (SSE + POST)
 - `sampling/createMessage` for server-driven inference
@@ -154,41 +158,56 @@ graph TB
 
 ## Trait Boundaries
 
+All async trait methods use the RPITIT pattern (return-position `impl Trait` in traits)
+with explicit `+ Send` bounds. See [ADR-003](../adr/003-rpitit-over-async-fn.md).
+
 ```rust
-/// Signing and verification. PR #1 — merged.
+/// Signing and verification — synchronous, no futures.
 trait MessageVerifier: Send + Sync {
     fn sign(&self, msg: &Message) -> SignedMessage;
     fn verify(&self, msg: &SignedMessage) -> Result<Message, VerifyError>;
 }
 
-/// Wire transport. PR #2 — in review.
+/// Wire transport — RPITIT pattern (ADR-003).
 trait MessageTransport: Send + Sync {
-    async fn connect(&mut self) -> Result<(), TransportError>;
-    async fn disconnect(&mut self) -> Result<(), TransportError>;
-    async fn send(&self, envelope: &Envelope) -> Result<(), TransportError>;
-    async fn recv(&self) -> Result<Envelope, TransportError>;
+    fn connect(&mut self) -> impl Future<Output = Result<ConnectionId, TransportError>> + Send;
+    fn disconnect(&mut self) -> impl Future<Output = Result<(), TransportError>> + Send;
+    fn send(&self, envelope: &Envelope) -> impl Future<Output = Result<(), TransportError>> + Send;
+    fn recv(&self) -> impl Future<Output = Result<Envelope, TransportError>> + Send;
+    fn is_connected(&self) -> bool;
 }
 
-/// LLM inference. Vesper — in progress.
+/// LLM inference — RPITIT pattern (ADR-003).
 trait InferenceProvider: Send + Sync {
-    async fn complete(&self, ctx: &Context) -> Result<Completion, ProviderError>;
+    fn complete(
+        &self,
+        request: &CompletionRequest,
+    ) -> impl Future<Output = Result<CompletionResponse, ProviderError>> + Send;
 }
 ```
 
 ## Implementation Status
 
-| Component | Status | Owner |
+| Component | Status | PR |
 |---|---|---|
-| `MessageVerifier` | Merged (PR #1) | Lain |
-| `MessageTransport` | In review (PR #2) | Ariadne |
-| `InferenceProvider` | In progress | Vesper |
-| `Context` type | Next | Lain |
-| Dione type extraction | Planned | TBD |
-| Dione stdio → HTTP | Integration milestone | TBD |
+| `MessageVerifier` | Merged | [#1](https://github.com/butterflyskies/helene/pull/1) |
+| `MessageTransport` | Merged | [#2](https://github.com/butterflyskies/helene/pull/2) |
+| `InferenceProvider` | Merged | [#4](https://github.com/butterflyskies/helene/pull/4) |
+| `Context` type | Merged | [#9](https://github.com/butterflyskies/helene/pull/9) |
+| RPITIT refactor | Merged | [#8](https://github.com/butterflyskies/helene/pull/8) |
+| Dione shared types | Planned | — |
+| MCP integration | Planned | — |
 
 ## Design Decisions
 
-- **Shared discord types from dione** — extract `dione-types` crate, not duplicated
+Significant decisions are recorded as ADRs in [`docs/adr/`](../adr/).
+
+- **HMAC over reply validation** — [ADR-001](../adr/001-hmac-over-reply-validation.md)
+- **Length-prefixed serialization** — [ADR-002](../adr/002-length-prefixed-serialization.md)
+- **RPITIT over async fn in traits** — [ADR-003](../adr/003-rpitit-over-async-fn.md)
+- **No `#[non_exhaustive]` in 0.x** — [ADR-004](../adr/004-no-non-exhaustive-in-0x.md)
+- **Squash-only merge strategy** — [ADR-005](../adr/005-squash-only-merge-strategy.md)
+- **Dione as shared types source** — [ADR-006](../adr/006-dione-shared-types.md)
 - **`canonical_bytes()` stays in helene** — signing is helene's concern
 - **Enterprise managed auth** (MCP extension) accommodated by trait boundaries
 - **Pure functions where possible** — `sign`, `verify`, `canonical_bytes`
