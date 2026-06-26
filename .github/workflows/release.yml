@@ -2,153 +2,67 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
 
-# Must queue, not cancel — cancelling mid-run can corrupt the release-please manifest.
 concurrency:
-  group: release-please
+  group: release
   cancel-in-progress: false
 
 permissions: {}
 
-env:
-  REGISTRY: ghcr.io
-  # TODO: update to your org/repo name (must match build.yml)
-  IMAGE: butterflyskies/my-project
-
 jobs:
-  release-please:
+  create-release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
-      issues: write
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      tag_name: ${{ github.ref_name }}
+      is_prerelease: ${{ contains(github.ref_name, '-') }}
     steps:
-      - id: release
-        uses: googleapis/release-please-action@8bb7a2ed0f90c9802c83129a9488d235a1f31a7c # main (2026-02-20, includes release-please 17.3.0 with force-tag-creation)
-        with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          prerelease_flag=""
+          if [[ "$TAG_NAME" == *-* ]]; then
+            prerelease_flag="--prerelease"
+          fi
+          gh release create "$TAG_NAME" --draft $prerelease_flag \
+            --title "$TAG_NAME" \
+            --repo "${{ github.repository }}"
 
-  # TODO: uncomment ci-gate, publish-image, publish-binaries, and publish-release
-  # when you're ready to ship artifacts on release. release-please creates draft
-  # releases (with tags via force-tag-creation) so assets can be uploaded before
-  # the release is published. The ci-gate job waits for CI to pass first.
-  #
-  # ci-gate:
-  #   needs: release-please
-  #   if: ${{ needs.release-please.outputs.release_created == 'true' }}
-  #   runs-on: ubuntu-latest
-  #   permissions: {}
-  #   steps:
-  #     - name: Wait for CI to pass
-  #       env:
-  #         GH_TOKEN: ${{ github.token }}
-  #       run: |
-  #         echo "Waiting for CI workflow on ${{ github.sha }}..."
-  #         for attempt in $(seq 1 20); do
-  #           run_id=$(gh run list --repo "${{ github.repository }}" --workflow=build.yml \
-  #             --event=push --commit="${{ github.sha }}" --limit=1 --json databaseId -q '.[0].databaseId')
-  #           [ -n "$run_id" ] && break
-  #           echo "CI run not found yet, retrying in 30s (attempt $attempt/20)..."
-  #           sleep 30
-  #         done
-  #         if [ -z "$run_id" ]; then
-  #           echo "::error::CI run not found for ${{ github.sha }} after 10 minutes"
-  #           exit 1
-  #         fi
-  #         echo "Found CI run $run_id, waiting for completion..."
-  #         gh run watch "$run_id" --repo "${{ github.repository }}" --exit-status > /dev/null
-  #         echo "CI run $run_id passed."
-  #
-  # publish-image:
-  #   needs: [release-please, ci-gate]
-  #   runs-on: ubuntu-latest
-  #   permissions:
-  #     contents: read
-  #     packages: write
-  #     id-token: write
-  #   steps:
-  #     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-  #       with:
-  #         ref: ${{ needs.release-please.outputs.tag_name }}
-  #     - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-  #     - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
-  #       with:
-  #         registry: ${{ env.REGISTRY }}
-  #         username: ${{ github.actor }}
-  #         password: ${{ secrets.GITHUB_TOKEN }}
-  #     - name: Docker meta
-  #       id: meta
-  #       uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
-  #       with:
-  #         images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
-  #         tags: |
-  #           type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }}
-  #           type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.tag_name }}
-  #     - uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
-  #       with:
-  #         context: .
-  #         push: true
-  #         tags: ${{ steps.meta.outputs.tags }}
-  #         labels: ${{ steps.meta.outputs.labels }}
-  #         provenance: true
-  #         sbom: true
-  #         cache-from: type=gha
-  #         cache-to: type=gha,mode=max
-  #
-  # TODO: update bin name and system dependencies for your project.
-  # publish-binaries:
-  #   needs: [release-please, ci-gate]
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       include:
-  #         - target: x86_64-unknown-linux-gnu
-  #           os: ubuntu-latest
-  #         # - target: aarch64-apple-darwin
-  #         #   os: macos-latest
-  #   runs-on: ${{ matrix.os }}
-  #   permissions:
-  #     contents: write
-  #   steps:
-  #     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-  #       with:
-  #         ref: ${{ needs.release-please.outputs.tag_name }}
-  #     # - name: Install system dependencies
-  #     #   if: contains(matrix.target, 'linux')
-  #     #   run: sudo apt-get update && sudo apt-get install -y libfoo-dev pkg-config
-  #     - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master (2026-02-13)
-  #       with:
-  #         toolchain: stable
-  #         targets: ${{ matrix.target }}
-  #     - uses: taiki-e/upload-rust-binary-action@0e34102c043ded9f2ca39f7af5cd99a540c61aff # v1.29.1
-  #       with:
-  #         bin: my-project
-  #         target: ${{ matrix.target }}
-  #         archive: my-project-$tag-$target
-  #         tar: all
-  #         zip: windows
-  #         checksum: sha256
-  #         token: ${{ secrets.GITHUB_TOKEN }}
-  #         ref: refs/tags/${{ needs.release-please.outputs.tag_name }}
-  #
-  # # Undraft the release after all artifacts (image + binaries) are uploaded.
-  # # release-please creates a draft so that immutable-release rules don't block
-  # # asset uploads; this job flips the draft flag once everything is in place.
-  # publish-release:
-  #   needs: [release-please, publish-image, publish-binaries]
-  #   runs-on: ubuntu-latest
-  #   permissions:
-  #     contents: write
-  #   steps:
-  #     - name: Publish GitHub release
-  #       env:
-  #         GH_TOKEN: ${{ github.token }}
-  #       run: |
-  #         gh release edit "${{ needs.release-please.outputs.tag_name }}" \
-  #           --draft=false \
-  #           --repo "${{ github.repository }}"
+  publish-crate:
+    needs: create-release
+    if: ${{ needs.create-release.outputs.is_prerelease != 'true' }}
+    uses: ./.github/workflows/publish-crate.yml
+    with:
+      tag: ${{ needs.create-release.outputs.tag_name }}
+    permissions:
+      id-token: write
+      contents: read
+
+  publish-release:
+    needs: [create-release, publish-crate]
+    if: ${{ always() && needs.create-release.result == 'success' && (needs.publish-crate.result == 'skipped' || needs.publish-crate.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.create-release.outputs.tag_name }}
+        run: |
+          gh release edit "$TAG_NAME" \
+            --draft=false \
+            --repo "${{ github.repository }}"
+
+  update-release-notes:
+    needs: [create-release, publish-release]
+    if: ${{ needs.create-release.outputs.is_prerelease != 'true' }}
+    uses: ./.github/workflows/update-release-notes.yml
+    with:
+      tag: ${{ needs.create-release.outputs.tag_name }}
+    permissions:
+      contents: write
