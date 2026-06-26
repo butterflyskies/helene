@@ -26,31 +26,10 @@ pub enum TransportError {
 /// to payload semantics — signing, verification, and serialization
 /// happen at higher layers.
 pub trait MessageTransport: Send + Sync {
-    /// Establish the transport connection. Returns the connection's
-    /// identifier on success, or [`TransportError::AlreadyConnected`]
-    /// if a connection is already active.
-    fn connect(
-        &mut self,
-    ) -> impl std::future::Future<Output = Result<ConnectionId, TransportError>> + Send;
-
-    /// Tear down the transport connection. Pending receives on the
-    /// remote side will observe [`TransportError::ConnectionClosed`].
-    fn disconnect(
-        &mut self,
-    ) -> impl std::future::Future<Output = Result<(), TransportError>> + Send;
-
-    /// Send an envelope to the remote endpoint. Requires an active
-    /// connection.
-    fn send(
-        &self,
-        envelope: &Envelope,
-    ) -> impl std::future::Future<Output = Result<(), TransportError>> + Send;
-
-    /// Receive the next envelope from the remote endpoint. Blocks
-    /// until a message arrives or the connection closes.
-    fn recv(&self) -> impl std::future::Future<Output = Result<Envelope, TransportError>> + Send;
-
-    /// Whether the transport currently has an active connection.
+    async fn connect(&mut self) -> Result<ConnectionId, TransportError>;
+    async fn disconnect(&mut self) -> Result<(), TransportError>;
+    async fn send(&self, envelope: &Envelope) -> Result<(), TransportError>;
+    async fn recv(&self) -> Result<Envelope, TransportError>;
     fn is_connected(&self) -> bool;
 }
 

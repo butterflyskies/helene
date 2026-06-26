@@ -12,7 +12,7 @@ use super::{ConnectionId, Envelope, MessageTransport, TenantId, TransportError};
 #[allow(dead_code)]
 pub struct MockTransport {
     connected: AtomicBool,
-    connection_id: String,
+    connection_id: ConnectionId,
     tenant_id: TenantId,
     tx: Option<mpsc::Sender<Envelope>>,
     rx: Mutex<mpsc::Receiver<Envelope>>,
@@ -36,14 +36,14 @@ impl MockTransport {
         (
             Self {
                 connected: AtomicBool::new(false),
-                connection_id: "mock-a".into(),
+                connection_id: ConnectionId("mock-a".into()),
                 tenant_id: tenant_id.clone(),
                 tx: Some(tx_a),
                 rx: Mutex::new(rx_b),
             },
             Self {
                 connected: AtomicBool::new(false),
-                connection_id: "mock-b".into(),
+                connection_id: ConnectionId("mock-b".into()),
                 tenant_id,
                 tx: Some(tx_b),
                 rx: Mutex::new(rx_a),
@@ -54,27 +54,27 @@ impl MockTransport {
 
 impl MessageTransport for MockTransport {
     async fn connect(&mut self) -> Result<ConnectionId, TransportError> {
-        if self.connected.load(Ordering::SeqCst) {
+        if self.connected.load(Ordering::Relaxed) {
             return Err(TransportError::AlreadyConnected);
         }
         if self.tx.is_none() {
             return Err(TransportError::ConnectionClosed);
         }
-        self.connected.store(true, Ordering::SeqCst);
-        Ok(ConnectionId(self.connection_id.clone()))
+        self.connected.store(true, Ordering::Relaxed);
+        Ok(self.connection_id.clone())
     }
 
     async fn disconnect(&mut self) -> Result<(), TransportError> {
-        if !self.connected.load(Ordering::SeqCst) {
+        if !self.connected.load(Ordering::Relaxed) {
             return Err(TransportError::NotConnected);
         }
         self.tx.take();
-        self.connected.store(false, Ordering::SeqCst);
+        self.connected.store(false, Ordering::Relaxed);
         Ok(())
     }
 
     async fn send(&self, envelope: &Envelope) -> Result<(), TransportError> {
-        if !self.connected.load(Ordering::SeqCst) {
+        if !self.connected.load(Ordering::Relaxed) {
             return Err(TransportError::NotConnected);
         }
         let tx = self.tx.as_ref().ok_or(TransportError::ConnectionClosed)?;
@@ -84,7 +84,7 @@ impl MessageTransport for MockTransport {
     }
 
     async fn recv(&self) -> Result<Envelope, TransportError> {
-        if !self.connected.load(Ordering::SeqCst) {
+        if !self.connected.load(Ordering::Relaxed) {
             return Err(TransportError::NotConnected);
         }
         let mut rx = self.rx.lock().await;
@@ -92,6 +92,6 @@ impl MessageTransport for MockTransport {
     }
 
     fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::SeqCst)
+        self.connected.load(Ordering::Relaxed)
     }
 }

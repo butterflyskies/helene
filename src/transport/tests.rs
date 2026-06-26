@@ -254,3 +254,37 @@ fn is_connected_reflects_state() {
         assert!(!a.is_connected());
     });
 }
+
+#[test]
+fn concurrent_sends_all_arrive() {
+    let rt = rt();
+    rt.block_on(async {
+        let (mut a, mut b) = MockTransport::pair(tid());
+        a.connect().await.unwrap();
+        b.connect().await.unwrap();
+
+        let a = std::sync::Arc::new(a);
+        let n = 50;
+        let mut handles = Vec::new();
+        for i in 0..n {
+            let sender = a.clone();
+            handles.push(tokio::spawn(async move {
+                let env = Envelope {
+                    tenant_id: TenantId("test".into()),
+                    seq: i,
+                    payload: vec![i as u8],
+                };
+                sender.send(&env).await.unwrap();
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        let mut seqs: Vec<u64> = Vec::new();
+        for _ in 0..n {
+            seqs.push(b.recv().await.unwrap().seq);
+        }
+        seqs.sort();
+        assert_eq!(seqs, (0..n).collect::<Vec<_>>());
+    });
+}
