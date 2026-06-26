@@ -16,6 +16,9 @@ pub enum SessionError {
     #[error("session not found for tenant: {0}")]
     TenantNotFound(TenantId),
 
+    #[error("tenant already exists: {0}")]
+    TenantAlreadyExists(TenantId),
+
     #[error("transport error: {0}")]
     Transport(#[from] crate::transport::TransportError),
 
@@ -24,28 +27,24 @@ pub enum SessionError {
 
     #[error("provider error: {0}")]
     Provider(#[from] crate::provider::ProviderError),
-
-    #[error("tenant already exists: {0}")]
-    TenantAlreadyExists(TenantId),
 }
 
 /// Orchestrates the verified message lifecycle.
 ///
-/// The session host is the glue layer — it consumes [`MessageVerifier`],
-/// [`MessageTransport`], and [`InferenceProvider`] to drive the full
-/// pipeline: receive envelope → verify → build context → complete → respond.
+/// The session host is the glue layer — it consumes [`MessageVerifier`]
+/// and [`InferenceProvider`] to drive the inference pipeline:
+/// verify → build context → complete → respond.
 ///
-/// Each tenant gets an isolated session with its own context, HMAC key,
-/// and provider configuration. The session host routes by [`TenantId`].
+/// Each tenant gets an isolated session with its own context and
+/// provider configuration. The session host routes by [`TenantId`].
 pub trait SessionHost: Send + Sync {
     /// Process a verified message through the inference pipeline.
     ///
-    /// The full lifecycle:
-    /// 1. Verify the message signature
-    /// 2. Append to the tenant's conversation context
-    /// 3. Build a completion request
-    /// 4. Route to the inference provider
-    /// 5. Return the response
+    /// The message is assumed to be already verified. The lifecycle:
+    /// 1. Append to the tenant's conversation context
+    /// 2. Build a completion request
+    /// 3. Route to the inference provider
+    /// 4. Return the response
     fn process_message(
         &self,
         tenant_id: &TenantId,

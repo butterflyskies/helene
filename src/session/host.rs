@@ -123,7 +123,13 @@ where
 
         let response = self.provider.complete(&request).await?;
 
-        if let ResponseContent::Text(ref text) = response.content {
+        // Append assistant response to context for multi-turn conversations.
+        let assistant_content = match &response.content {
+            ResponseContent::Text(text) => text.clone(),
+            ResponseContent::ToolCalls(calls) => format!("{calls:?}"),
+        };
+
+        {
             let mut sessions = self.sessions.write().await;
             if let Some(session) = sessions.get_mut(tenant_id) {
                 let assistant_msg = Message {
@@ -137,7 +143,7 @@ where
                         .unwrap_or_default()
                         .as_secs(),
                     author: "assistant".into(),
-                    content: text.clone(),
+                    content: assistant_content,
                 };
                 session.context.push(assistant_msg, Role::Assistant);
             }
