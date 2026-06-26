@@ -10,13 +10,15 @@ fn arb_message() -> impl Strategy<Value = Message> {
         "[a-zA-Z0-9_]{1,32}",
         ".*",
     )
-        .prop_map(|(channel_id, message_id, timestamp, author, content)| Message {
-            channel_id: ChannelId(channel_id),
-            message_id: MessageId(message_id),
-            timestamp,
-            author,
-            content,
-        })
+        .prop_map(
+            |(channel_id, message_id, timestamp, author, content)| Message {
+                channel_id: ChannelId(channel_id),
+                message_id: MessageId(message_id),
+                timestamp,
+                author,
+                content,
+            },
+        )
 }
 
 fn arb_key() -> impl Strategy<Value = Vec<u8>> {
