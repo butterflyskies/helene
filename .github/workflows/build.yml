@@ -16,7 +16,7 @@ permissions: {}
 env:
   REGISTRY: ghcr.io
   # TODO: update to your org/repo name
-  IMAGE: butterflyskies/my-project
+  IMAGE: butterflyskies/helene
 
 jobs:
   test:
