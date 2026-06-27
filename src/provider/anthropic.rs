@@ -492,7 +492,10 @@ async fn map_error_response(response: reqwest::Response, model: &ModelId) -> Pro
 fn parse_retry_after(value: &str) -> Option<u64> {
     // Try delay-seconds first (most common from Anthropic).
     if let Ok(secs) = value.parse::<f64>() {
-        return Some((secs * 1000.0) as u64);
+        if secs.is_finite() && secs >= 0.0 {
+            return Some((secs * 1000.0) as u64);
+        }
+        return None;
     }
     // Try HTTP-date (e.g. "Thu, 01 Dec 1994 16:00:00 GMT").
     let target = httpdate::parse_http_date(value).ok()?;
@@ -1217,11 +1220,37 @@ mod tests {
     }
 
     #[test]
+    fn parse_retry_after_zero() {
+        assert_eq!(parse_retry_after("0"), Some(0));
+    }
+
+    #[test]
+    fn parse_retry_after_negative_returns_none() {
+        assert!(parse_retry_after("-5").is_none());
+    }
+
+    #[test]
+    fn parse_retry_after_nan_returns_none() {
+        assert!(parse_retry_after("NaN").is_none());
+    }
+
+    #[test]
+    fn parse_retry_after_infinity_returns_none() {
+        assert!(parse_retry_after("inf").is_none());
+        assert!(parse_retry_after("infinity").is_none());
+    }
+
+    #[test]
     fn parse_retry_after_http_date() {
         // Use a date far in the future so it's always after SystemTime::now().
         let result = parse_retry_after("Sun, 01 Jan 2090 00:00:00 GMT");
         assert!(result.is_some(), "should parse HTTP-date");
-        assert!(result.unwrap() > 0, "should be a positive duration");
+        // Must be in milliseconds — at least ~2 billion ms for a 2090 date.
+        assert!(
+            result.unwrap() > 1_000_000_000_000,
+            "expected duration in ms for 2090 date, got {}",
+            result.unwrap()
+        );
     }
 
     #[test]
