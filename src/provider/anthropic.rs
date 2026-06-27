@@ -265,7 +265,12 @@ fn build_api_request(request: &CompletionRequest) -> Result<ApiRequest, Provider
                         }
                         for tc in calls {
                             let input: Value =
-                                serde_json::from_str(&tc.arguments).unwrap_or_default();
+                                serde_json::from_str(&tc.arguments).map_err(|e| {
+                                    ProviderError::Request(format!(
+                                        "invalid JSON in tool call arguments for '{}': {e}",
+                                        tc.name
+                                    ))
+                                })?;
                             blocks.push(ContentBlock::ToolUse {
                                 id: tc.id.clone(),
                                 name: tc.name.clone(),
@@ -806,6 +811,34 @@ mod tests {
             "empty text should not produce a text block"
         );
         assert_eq!(blocks[0]["type"], "tool_use");
+    }
+
+    #[test]
+    fn assistant_with_invalid_tool_call_json_rejected() {
+        let tool_calls = vec![ToolCall {
+            id: "toolu_01".into(),
+            name: "broken_tool".into(),
+            arguments: "not valid json {{{".into(),
+        }];
+        let req = simple_request(vec![
+            ChatMessage::user("Do something"),
+            ChatMessage::assistant_with_tool_calls("", tool_calls),
+            ChatMessage::tool_result("toolu_01", "result"),
+        ]);
+        let err = build_api_request(&req).unwrap_err();
+        match &err {
+            ProviderError::Request(msg) => {
+                assert!(
+                    msg.contains("broken_tool"),
+                    "should name the tool call: {msg}"
+                );
+                assert!(
+                    msg.contains("invalid JSON"),
+                    "should describe the issue: {msg}"
+                );
+            }
+            other => panic!("expected Request, got {other:?}"),
+        }
     }
 
     // -- Request building: tool definitions --
