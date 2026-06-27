@@ -73,16 +73,16 @@ impl AnthropicProvider {
     /// Create a new provider with the given API key.
     ///
     /// Uses sensible default timeouts (30 s connect, 600 s request).
-    pub fn new(api_key: ApiKey) -> Self {
-        Self {
+    pub fn new(api_key: ApiKey) -> Result<Self, ProviderError> {
+        Ok(Self {
             client: Client::builder()
                 .connect_timeout(DEFAULT_CONNECT_TIMEOUT)
                 .timeout(DEFAULT_REQUEST_TIMEOUT)
                 .build()
-                .expect("failed to build HTTP client"),
+                .map_err(|e| ProviderError::Request(format!("failed to build HTTP client: {e}")))?,
             api_key,
             api_url: DEFAULT_API_URL.into(),
-        }
+        })
     }
 
     /// Override the API endpoint (useful for testing against a mock server).
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn provider_debug_redacted() {
-        let provider = AnthropicProvider::new(ApiKey::new("sk-ant-secret").unwrap());
+        let provider = AnthropicProvider::new(ApiKey::new("sk-ant-secret").unwrap()).unwrap();
         let debug = format!("{provider:?}");
         assert!(debug.contains("ApiKey([REDACTED])"));
         assert!(!debug.contains("sk-ant-secret"));
@@ -571,6 +571,7 @@ mod tests {
     #[test]
     fn with_api_url_overrides_default() {
         let provider = AnthropicProvider::new(ApiKey::new("key").unwrap())
+            .unwrap()
             .with_api_url("http://localhost:8080");
         let debug = format!("{provider:?}");
         assert!(debug.contains("localhost:8080"));
