@@ -846,7 +846,16 @@ mod tests {
             }]),
         };
         let err = build_api_request(&req).unwrap_err();
-        assert!(err.to_string().contains("bad_tool"));
+        match &err {
+            ProviderError::Request(msg) => {
+                assert!(msg.contains("bad_tool"), "should name the tool: {msg}");
+                assert!(
+                    msg.contains("invalid JSON"),
+                    "should describe the issue: {msg}"
+                );
+            }
+            other => panic!("expected Request, got {other:?}"),
+        }
     }
 
     // -- Request building: edge cases --
@@ -855,7 +864,12 @@ mod tests {
     fn only_system_messages_rejected() {
         let req = simple_request(vec![ChatMessage::system("system only")]);
         let err = build_api_request(&req).unwrap_err();
-        assert!(err.to_string().contains("no messages"));
+        match &err {
+            ProviderError::Request(msg) => {
+                assert_eq!(msg, "no messages after extracting system prompt");
+            }
+            other => panic!("expected Request, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1123,8 +1137,7 @@ mod tests {
         let body = r#"{"type":"error","error":{"type":"authentication_error","message":"invalid api key"}}"#;
         match map_error(401, None, body, &test_model()) {
             ProviderError::Auth(msg) => {
-                assert!(msg.contains("authentication_error"));
-                assert!(msg.contains("invalid api key"));
+                assert_eq!(msg, "authentication_error: invalid api key");
             }
             other => panic!("expected Auth, got {other:?}"),
         }
@@ -1216,7 +1229,7 @@ mod tests {
         let body = r#"{"type":"error","error":{"type":"api_error","message":"internal error"}}"#;
         match map_error(500, None, body, &test_model()) {
             ProviderError::Unavailable(msg) => {
-                assert!(msg.contains("internal error"));
+                assert_eq!(msg, "api_error: internal error");
             }
             other => panic!("expected Unavailable, got {other:?}"),
         }
@@ -1226,8 +1239,7 @@ mod tests {
     fn error_500_unparseable_body_includes_status() {
         match map_error(500, None, "kaboom", &test_model()) {
             ProviderError::Unavailable(msg) => {
-                assert!(msg.contains("500"));
-                assert!(msg.contains("kaboom"));
+                assert_eq!(msg, "HTTP 500: kaboom");
             }
             other => panic!("expected Unavailable, got {other:?}"),
         }
@@ -1236,7 +1248,9 @@ mod tests {
     #[test]
     fn error_503_maps_to_unavailable() {
         match map_error(503, None, "", &test_model()) {
-            ProviderError::Unavailable(_) => {}
+            ProviderError::Unavailable(msg) => {
+                assert_eq!(msg, "HTTP 503: ");
+            }
             other => panic!("expected Unavailable, got {other:?}"),
         }
     }
@@ -1244,7 +1258,9 @@ mod tests {
     #[test]
     fn error_504_maps_to_unavailable() {
         match map_error(504, None, "", &test_model()) {
-            ProviderError::Unavailable(_) => {}
+            ProviderError::Unavailable(msg) => {
+                assert_eq!(msg, "HTTP 504: ");
+            }
             other => panic!("expected Unavailable, got {other:?}"),
         }
     }
@@ -1253,7 +1269,7 @@ mod tests {
     fn error_529_maps_to_unavailable() {
         match map_error(529, None, "", &test_model()) {
             ProviderError::Unavailable(msg) => {
-                assert!(msg.contains("overloaded"));
+                assert_eq!(msg, "API overloaded");
             }
             other => panic!("expected Unavailable, got {other:?}"),
         }
