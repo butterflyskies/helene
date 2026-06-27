@@ -4,7 +4,11 @@ use tokio::sync::{Mutex, mpsc};
 
 use super::{ConnectionId, Envelope, MessageTransport, TenantId, TransportError};
 
-/// Default buffer capacity for mock transport channels.
+/// Default buffer capacity (messages per direction) for mock transport channels.
+///
+/// Sized generously so tests exercising normal send/recv flow never hit
+/// backpressure incidentally; tests that *want* to observe blocking opt into a
+/// smaller capacity via [`MockTransport::pair_with_buffer`].
 const DEFAULT_BUFFER_SIZE: usize = 256;
 
 /// In-process mock transport backed by tokio mpsc channels.
@@ -27,7 +31,7 @@ impl MockTransport {
     }
 
     /// Create a connected pair of mock transports with the default buffer
-    /// size (256 messages per direction).
+    /// size (`DEFAULT_BUFFER_SIZE` messages per direction).
     ///
     /// Messages sent by one side are received by the other.
     /// Both sides start in the disconnected state — call
@@ -41,8 +45,8 @@ impl MockTransport {
     ///
     /// `buffer_size` controls how many messages can be buffered per direction
     /// before the sender blocks (backpressure). The default via [`pair`](Self::pair)
-    /// is 256, which is generous for testing. Use a smaller value to exercise
-    /// backpressure behavior in tests.
+    /// is `DEFAULT_BUFFER_SIZE`, which is generous for testing. Use a smaller
+    /// value to exercise backpressure behavior in tests.
     pub fn pair_with_buffer(tenant_id: TenantId, buffer_size: usize) -> (Self, Self) {
         let (tx_a, rx_a) = mpsc::channel(buffer_size);
         let (tx_b, rx_b) = mpsc::channel(buffer_size);
