@@ -64,7 +64,7 @@ struct WireEnvelope {
 impl WireEnvelope {
     fn from_envelope(env: &Envelope) -> Self {
         Self {
-            tenant_id: env.tenant_id.0.clone(),
+            tenant_id: env.tenant_id.as_str().to_owned(),
             seq: env.seq,
             payload: BASE64.encode(&env.payload),
         }
@@ -75,7 +75,7 @@ impl WireEnvelope {
             .decode(&self.payload)
             .map_err(|e| TransportError::RecvFailed(format!("invalid base64 payload: {e}")))?;
         Ok(Envelope {
-            tenant_id: TenantId(self.tenant_id),
+            tenant_id: TenantId::from(self.tenant_id),
             seq: self.seq,
             payload,
         })
@@ -606,7 +606,7 @@ impl MessageTransport for HttpTransport {
 
         self.connected.store(true, Ordering::Relaxed);
 
-        let cid = ConnectionId(format!(
+        let cid = ConnectionId::from(format!(
             "http-{}",
             self.config.endpoint.host_str().unwrap_or("unknown")
         ));
@@ -807,7 +807,7 @@ mod tests {
     #[test]
     fn wire_envelope_roundtrip() {
         let env = Envelope {
-            tenant_id: TenantId("tenant-1".into()),
+            tenant_id: TenantId::from("tenant-1"),
             seq: 42,
             payload: vec![0, 1, 2, 255],
         };
@@ -821,7 +821,7 @@ mod tests {
     #[test]
     fn wire_envelope_empty_payload() {
         let env = Envelope {
-            tenant_id: TenantId("t".into()),
+            tenant_id: TenantId::from("t"),
             seq: 0,
             payload: vec![],
         };
@@ -952,7 +952,7 @@ mod tests {
     #[test]
     fn process_event_valid_no_signing() {
         let env = Envelope {
-            tenant_id: TenantId("t1".into()),
+            tenant_id: TenantId::from("t1"),
             seq: 7,
             payload: vec![42],
         };
@@ -972,7 +972,7 @@ mod tests {
     #[test]
     fn process_event_default_type_is_message() {
         let env = Envelope {
-            tenant_id: TenantId("t".into()),
+            tenant_id: TenantId::from("t"),
             seq: 0,
             payload: vec![],
         };
@@ -1015,7 +1015,7 @@ mod tests {
     fn process_event_hmac_valid() {
         let signer = TransportSigner::new(b"key".to_vec());
         let env = Envelope {
-            tenant_id: TenantId("t".into()),
+            tenant_id: TenantId::from("t"),
             seq: 1,
             payload: vec![1, 2, 3],
         };
@@ -1069,7 +1069,7 @@ mod tests {
     async fn not_connected_by_default() {
         let config = HttpTransportConfig::new(
             Url::parse("http://localhost:9999").unwrap(),
-            TenantId("test".into()),
+            TenantId::from("test"),
         );
         let transport = HttpTransport::new(config);
         assert!(!transport.is_connected());
@@ -1079,11 +1079,11 @@ mod tests {
     async fn send_before_connect_fails() {
         let config = HttpTransportConfig::new(
             Url::parse("http://localhost:9999").unwrap(),
-            TenantId("test".into()),
+            TenantId::from("test"),
         );
         let transport = HttpTransport::new(config);
         let env = Envelope {
-            tenant_id: TenantId("t".into()),
+            tenant_id: TenantId::from("t"),
             seq: 0,
             payload: vec![],
         };
@@ -1097,7 +1097,7 @@ mod tests {
     async fn recv_before_connect_fails() {
         let config = HttpTransportConfig::new(
             Url::parse("http://localhost:9999").unwrap(),
-            TenantId("test".into()),
+            TenantId::from("test"),
         );
         let transport = HttpTransport::new(config);
         assert_eq!(transport.recv().await, Err(TransportError::NotConnected));
@@ -1107,7 +1107,7 @@ mod tests {
     async fn disconnect_before_connect_fails() {
         let config = HttpTransportConfig::new(
             Url::parse("http://localhost:9999").unwrap(),
-            TenantId("test".into()),
+            TenantId::from("test"),
         );
         let mut transport = HttpTransport::new(config);
         assert_eq!(
@@ -1120,7 +1120,7 @@ mod tests {
     async fn double_connect_fails() {
         let config = HttpTransportConfig::new(
             Url::parse("http://localhost:9999").unwrap(),
-            TenantId("test".into()),
+            TenantId::from("test"),
         );
         let mut transport = HttpTransport::new(config);
         transport.connect().await.unwrap();
@@ -1136,14 +1136,14 @@ mod tests {
     async fn connect_disconnect_lifecycle() {
         let config = HttpTransportConfig::new(
             Url::parse("http://localhost:9999").unwrap(),
-            TenantId("test".into()),
+            TenantId::from("test"),
         );
         let mut transport = HttpTransport::new(config);
 
         assert!(!transport.is_connected());
         let cid = transport.connect().await.unwrap();
         assert!(transport.is_connected());
-        assert_eq!(cid.0, "http-localhost");
+        assert_eq!(cid.as_str(), "http-localhost");
 
         transport.disconnect().await.unwrap();
         assert!(!transport.is_connected());
@@ -1229,13 +1229,13 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             );
             let mut transport = HttpTransport::new(config);
             transport.connect().await.unwrap();
 
             let env = Envelope {
-                tenant_id: TenantId("t".into()),
+                tenant_id: TenantId::from("t"),
                 seq: 1,
                 payload: vec![10, 20, 30],
             };
@@ -1267,7 +1267,7 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             )
             .with_hmac_key(b"test-key".to_vec());
 
@@ -1275,7 +1275,7 @@ mod tests {
             transport.connect().await.unwrap();
 
             let env = Envelope {
-                tenant_id: TenantId("t".into()),
+                tenant_id: TenantId::from("t"),
                 seq: 0,
                 payload: vec![],
             };
@@ -1289,7 +1289,7 @@ mod tests {
             let server = MockServer::start().await;
 
             let expected = Envelope {
-                tenant_id: TenantId("tenant-1".into()),
+                tenant_id: TenantId::from("tenant-1"),
                 seq: 42,
                 payload: vec![1, 2, 3, 4],
             };
@@ -1307,7 +1307,7 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             );
             let mut transport = HttpTransport::new(config);
             transport.connect().await.unwrap();
@@ -1324,7 +1324,7 @@ mod tests {
 
             let envelopes: Vec<Envelope> = (0..5)
                 .map(|i| Envelope {
-                    tenant_id: TenantId("t".into()),
+                    tenant_id: TenantId::from("t"),
                     seq: i,
                     payload: vec![i as u8],
                 })
@@ -1342,7 +1342,7 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             );
             let mut transport = HttpTransport::new(config);
             transport.connect().await.unwrap();
@@ -1377,13 +1377,13 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             );
             let mut transport = HttpTransport::new(config);
             transport.connect().await.unwrap();
 
             let env = Envelope {
-                tenant_id: TenantId("t".into()),
+                tenant_id: TenantId::from("t"),
                 seq: 0,
                 payload: vec![],
             };
@@ -1401,7 +1401,7 @@ mod tests {
             let server = MockServer::start().await;
 
             let env = Envelope {
-                tenant_id: TenantId("t".into()),
+                tenant_id: TenantId::from("t"),
                 seq: 0,
                 payload: vec![],
             };
@@ -1419,7 +1419,7 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             );
             let mut transport = HttpTransport::new(config);
             transport.connect().await.unwrap();
@@ -1454,13 +1454,13 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             );
             let mut transport = HttpTransport::new(config);
             transport.connect().await.unwrap();
 
             let env = Envelope {
-                tenant_id: TenantId("t".into()),
+                tenant_id: TenantId::from("t"),
                 seq: 0,
                 payload: vec![],
             };
@@ -1477,7 +1477,7 @@ mod tests {
             let signer = TransportSigner::new(hmac_key.clone());
 
             let expected = Envelope {
-                tenant_id: TenantId("signed".into()),
+                tenant_id: TenantId::from("signed"),
                 seq: 7,
                 payload: vec![99],
             };
@@ -1494,7 +1494,7 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             )
             .with_hmac_key(hmac_key);
 
@@ -1514,7 +1514,7 @@ mod tests {
             // Sign with a different key than the transport uses.
             let wrong_signer = TransportSigner::new(b"wrong-key".to_vec());
             let env = Envelope {
-                tenant_id: TenantId("t".into()),
+                tenant_id: TenantId::from("t"),
                 seq: 0,
                 payload: vec![],
             };
@@ -1531,7 +1531,7 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             )
             .with_hmac_key(b"correct-key".to_vec());
 
@@ -1550,7 +1550,7 @@ mod tests {
 
             // SSE body without signature fields, but transport has HMAC configured.
             let env = Envelope {
-                tenant_id: TenantId("t".into()),
+                tenant_id: TenantId::from("t"),
                 seq: 0,
                 payload: vec![],
             };
@@ -1567,7 +1567,7 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             )
             .with_hmac_key(b"key".to_vec());
 
@@ -1589,7 +1589,7 @@ mod tests {
 
             // First GET fails, second succeeds with an envelope.
             let env = Envelope {
-                tenant_id: TenantId("t".into()),
+                tenant_id: TenantId::from("t"),
                 seq: 0,
                 payload: vec![42],
             };
@@ -1614,7 +1614,7 @@ mod tests {
 
             let mut config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             );
             config.reconnect_base_delay = Duration::from_millis(10);
             config.reconnect_max_retries = 3;
@@ -1640,7 +1640,7 @@ mod tests {
             let server = MockServer::start().await;
 
             let expected = Envelope {
-                tenant_id: TenantId("t".into()),
+                tenant_id: TenantId::from("t"),
                 seq: 1,
                 payload: vec![10, 20],
             };
@@ -1657,7 +1657,7 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             );
             let mut transport = HttpTransport::new(config);
             transport.connect().await.unwrap();
@@ -1675,7 +1675,7 @@ mod tests {
             let signer = TransportSigner::new(hmac_key.clone());
 
             let expected = Envelope {
-                tenant_id: TenantId("t".into()),
+                tenant_id: TenantId::from("t"),
                 seq: 3,
                 payload: vec![7, 8, 9],
             };
@@ -1692,7 +1692,7 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             )
             .with_hmac_key(hmac_key);
 
@@ -1711,7 +1711,7 @@ mod tests {
 
             let envelopes: Vec<Envelope> = (0..3)
                 .map(|i| Envelope {
-                    tenant_id: TenantId("t".into()),
+                    tenant_id: TenantId::from("t"),
                     seq: i,
                     payload: vec![i as u8],
                 })
@@ -1729,7 +1729,7 @@ mod tests {
 
             let config = HttpTransportConfig::new(
                 Url::parse(&server.uri()).unwrap(),
-                TenantId("test".into()),
+                TenantId::from("test"),
             );
             let mut transport = HttpTransport::new(config);
             transport.connect().await.unwrap();
@@ -1757,7 +1757,7 @@ mod tests {
                 prop::collection::vec(any::<u8>(), 0..=1024),
             )
                 .prop_map(|(tid, seq, payload)| Envelope {
-                    tenant_id: TenantId(tid),
+                    tenant_id: TenantId::from(tid),
                     seq,
                     payload,
                 })
