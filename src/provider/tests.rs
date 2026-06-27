@@ -56,8 +56,11 @@ fn arb_tool_definition() -> impl Strategy<Value = ToolDefinition> {
 fn arb_response_content() -> impl Strategy<Value = ResponseContent> {
     prop_oneof![
         ".*".prop_map(ResponseContent::Text),
-        prop::collection::vec(arb_tool_call(), 1..=3)
-            .prop_map(|calls| ResponseContent::ToolCalls { calls, text: None }),
+        (
+            prop::collection::vec(arb_tool_call(), 1..=3),
+            prop::option::of(".*")
+        )
+            .prop_map(|(calls, text)| ResponseContent::ToolCalls { calls, text }),
     ]
 }
 
@@ -105,9 +108,15 @@ fn message_constructors() {
 
     let usr = ChatMessage::user("hello");
     assert_eq!(usr.role, Role::User);
+    assert_eq!(usr.content, "hello");
+    assert!(usr.tool_call_id.is_none());
+    assert!(usr.tool_calls.is_none());
 
     let ast = ChatMessage::assistant("hi there");
     assert_eq!(ast.role, Role::Assistant);
+    assert_eq!(ast.content, "hi there");
+    assert!(ast.tool_call_id.is_none());
+    assert!(ast.tool_calls.is_none());
 
     let tool = ChatMessage::tool(r#"{"result": 42}"#);
     assert_eq!(tool.role, Role::Tool);

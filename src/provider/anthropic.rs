@@ -239,6 +239,12 @@ fn build_api_request(request: &CompletionRequest) -> Result<ApiRequest, Provider
     let mut messages: Vec<ApiMessage> = Vec::new();
 
     for msg in &request.messages {
+        if msg.tool_calls.is_some() && msg.role != Role::Assistant {
+            return Err(ProviderError::Request(format!(
+                "tool_calls set on {} message (only valid on assistant)",
+                msg.role
+            )));
+        }
         match msg.role {
             Role::System => match &mut system {
                 Some(s) => {
@@ -939,6 +945,32 @@ mod tests {
     }
 
     #[test]
+    fn tool_calls_on_non_assistant_rejected() {
+        let msg = ChatMessage {
+            role: Role::User,
+            content: "hi".into(),
+            tool_call_id: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "toolu_01".into(),
+                name: "search".into(),
+                arguments: r#"{"q":"test"}"#.into(),
+            }]),
+        };
+        let req = simple_request(vec![msg]);
+        let err = build_api_request(&req).unwrap_err();
+        match &err {
+            ProviderError::Request(msg) => {
+                assert!(msg.contains("user"), "should mention the role: {msg}");
+                assert!(
+                    msg.contains("tool_calls"),
+                    "should mention tool_calls: {msg}"
+                );
+            }
+            other => panic!("expected Request, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn request_model_and_max_tokens_mapped() {
         let req = CompletionRequest {
             model: ModelId::new("claude-opus-4-20250514"),
@@ -1035,13 +1067,15 @@ mod tests {
         let result = parse_api_response(resp).unwrap();
 
         match &result.content {
-            ResponseContent::ToolCalls { calls, .. } => {
+            ResponseContent::ToolCalls { calls, text } => {
                 assert_eq!(calls.len(), 2);
                 assert_eq!(calls[0].id, "toolu_01");
                 assert_eq!(calls[0].name, "search");
                 assert_eq!(calls[0].arguments, r#"{"q":"rust"}"#);
                 assert_eq!(calls[1].id, "toolu_02");
                 assert_eq!(calls[1].name, "fetch");
+                assert_eq!(calls[1].arguments, r#"{"url":"https://example.com"}"#);
+                assert!(text.is_none(), "tool-only response should have no text");
             }
             other => panic!("expected ToolCalls, got {other:?}"),
         }
@@ -1283,6 +1317,16 @@ mod tests {
                 assert_eq!(id.0, "claude-unknown");
             }
             other => panic!("expected ModelNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_502_maps_to_unavailable() {
+        match map_error(502, None, "", &test_model()) {
+            ProviderError::Unavailable(msg) => {
+                assert_eq!(msg, "HTTP 502: ");
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
         }
     }
 
