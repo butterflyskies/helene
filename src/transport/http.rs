@@ -481,6 +481,11 @@ async fn run_sse_stream(
         None
     }
 
+    // Track whether the previous byte was CR so that the LF half
+    // of a CRLF pair can be consumed without producing a spurious
+    // blank-line dispatch. Persists across chunks to handle splits.
+    let mut prev_cr = false;
+
     while let Some(chunk_result) = stream.next().await {
         let chunk = match chunk_result {
             Ok(c) => c,
@@ -490,18 +495,31 @@ async fn run_sse_stream(
         // SSE is line-oriented. Per WHATWG spec §9.2, lines may be
         // terminated by LF, CRLF, or bare CR.
         for &byte in chunk.iter() {
-            if byte == b'\n' || byte == b'\r' {
-                // For CRLF, the \r adds nothing (line_buf was already
-                // dispatched on the previous \n or this is the \r of
-                // \r\n — either way, skip empty lines from the split).
-                if (!line_buf.is_empty() || byte == b'\n')
-                    && let Some(outcome) =
-                        dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes)
-                            .await
+            if byte == b'\n' {
+                if prev_cr {
+                    // LF half of a CRLF pair — the line was already
+                    // dispatched when we saw the CR. Skip.
+                    prev_cr = false;
+                    continue;
+                }
+                // Standalone LF: dispatch the accumulated line.
+                if let Some(outcome) =
+                    dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes)
+                        .await
+                {
+                    return outcome;
+                }
+            } else if byte == b'\r' {
+                prev_cr = true;
+                // CR always terminates the current line.
+                if let Some(outcome) =
+                    dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes)
+                        .await
                 {
                     return outcome;
                 }
             } else {
+                prev_cr = false;
                 if line_buf.len() >= max_line_bytes {
                     return SseOutcome::Error(format!(
                         "SSE line exceeds {max_line_bytes} byte limit"
@@ -1162,6 +1180,31 @@ mod tests {
             body
         }
 
+        /// Build an SSE body using CRLF line endings.
+        fn make_crlf_sse_body(envelopes: &[Envelope]) -> String {
+            let mut body = String::new();
+            for env in envelopes {
+                let wire = WireEnvelope::from_envelope(env);
+                let data = serde_json::to_string(&wire).unwrap();
+                body.push_str(&format!("event: message\r\ndata: {data}\r\n\r\n"));
+            }
+            body
+        }
+
+        /// Build an HMAC-signed SSE body using CRLF line endings.
+        fn make_crlf_signed_sse_body(envelopes: &[Envelope], signer: &TransportSigner) -> String {
+            let mut body = String::new();
+            for env in envelopes {
+                let wire = WireEnvelope::from_envelope(env);
+                let data = serde_json::to_string(&wire).unwrap();
+                let sig = signer.sign_hex(data.as_bytes());
+                body.push_str(&format!(
+                    "event: message\r\ndata: {data}\r\nsignature: {sig}\r\n\r\n"
+                ));
+            }
+            body
+        }
+
         #[tokio::test]
         async fn send_posts_to_server() {
             let server = MockServer::start().await;
@@ -1586,6 +1629,115 @@ mod tests {
                 .expect("recv failed");
 
             assert_eq!(received, env);
+
+            transport.disconnect().await.unwrap();
+        }
+
+        // ── CRLF line-ending tests ──────────────────────────────
+
+        #[tokio::test]
+        async fn recv_from_crlf_sse_stream() {
+            let server = MockServer::start().await;
+
+            let expected = Envelope {
+                tenant_id: TenantId("t".into()),
+                seq: 1,
+                payload: vec![10, 20],
+            };
+            let sse_body = make_crlf_sse_body(std::slice::from_ref(&expected));
+
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(sse_body)
+                        .insert_header("content-type", "text/event-stream"),
+                )
+                .mount(&server)
+                .await;
+
+            let config = HttpTransportConfig::new(
+                Url::parse(&server.uri()).unwrap(),
+                TenantId("test".into()),
+            );
+            let mut transport = HttpTransport::new(config);
+            transport.connect().await.unwrap();
+
+            let received = transport.recv().await.unwrap();
+            assert_eq!(received, expected);
+
+            transport.disconnect().await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn recv_crlf_with_hmac_verification() {
+            let server = MockServer::start().await;
+            let hmac_key = b"crlf-test-key".to_vec();
+            let signer = TransportSigner::new(hmac_key.clone());
+
+            let expected = Envelope {
+                tenant_id: TenantId("t".into()),
+                seq: 3,
+                payload: vec![7, 8, 9],
+            };
+            let sse_body = make_crlf_signed_sse_body(std::slice::from_ref(&expected), &signer);
+
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(sse_body)
+                        .insert_header("content-type", "text/event-stream"),
+                )
+                .mount(&server)
+                .await;
+
+            let config = HttpTransportConfig::new(
+                Url::parse(&server.uri()).unwrap(),
+                TenantId("test".into()),
+            )
+            .with_hmac_key(hmac_key);
+
+            let mut transport = HttpTransport::new(config);
+            transport.connect().await.unwrap();
+
+            let received = transport.recv().await.unwrap();
+            assert_eq!(received, expected);
+
+            transport.disconnect().await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn recv_multiple_crlf_envelopes_in_order() {
+            let server = MockServer::start().await;
+
+            let envelopes: Vec<Envelope> = (0..3)
+                .map(|i| Envelope {
+                    tenant_id: TenantId("t".into()),
+                    seq: i,
+                    payload: vec![i as u8],
+                })
+                .collect();
+            let sse_body = make_crlf_sse_body(&envelopes);
+
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(sse_body)
+                        .insert_header("content-type", "text/event-stream"),
+                )
+                .mount(&server)
+                .await;
+
+            let config = HttpTransportConfig::new(
+                Url::parse(&server.uri()).unwrap(),
+                TenantId("test".into()),
+            );
+            let mut transport = HttpTransport::new(config);
+            transport.connect().await.unwrap();
+
+            for expected in &envelopes {
+                let received = transport.recv().await.unwrap();
+                assert_eq!(&received, expected);
+            }
 
             transport.disconnect().await.unwrap();
         }
