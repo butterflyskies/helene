@@ -473,7 +473,7 @@ fn map_error(
         }
         429 => ProviderError::RateLimited { retry_after_ms },
         404 => ProviderError::ModelNotFound(model.clone()),
-        500 | 502 | 503 => {
+        500 | 502 | 503 | 504 => {
             let msg = parse_error_message(body).unwrap_or_else(|| format!("HTTP {status}: {body}"));
             ProviderError::Unavailable(msg)
         }
@@ -1113,6 +1113,14 @@ mod tests {
     #[test]
     fn error_503_maps_to_unavailable() {
         match map_error(503, None, "", &test_model()) {
+            ProviderError::Unavailable(_) => {}
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_504_maps_to_unavailable() {
+        match map_error(504, None, "", &test_model()) {
             ProviderError::Unavailable(_) => {}
             other => panic!("expected Unavailable, got {other:?}"),
         }
