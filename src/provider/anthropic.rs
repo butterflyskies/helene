@@ -1,7 +1,7 @@
 //! Anthropic Messages API inference provider.
 
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -452,11 +452,24 @@ async fn map_error_response(response: reqwest::Response, model: &ModelId) -> Pro
         .headers()
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<f64>().ok())
-        .map(|secs| (secs * 1000.0) as u64);
+        .and_then(|v| parse_retry_after(v));
     let body = response.text().await.unwrap_or_default();
 
     map_error(status, retry_after_ms, &body, model)
+}
+
+/// Parse a `Retry-After` header value as either delay-seconds (integer or
+/// fractional) or an HTTP-date (RFC 7231 §7.1.1.1). Returns milliseconds.
+fn parse_retry_after(value: &str) -> Option<u64> {
+    // Try delay-seconds first (most common from Anthropic).
+    if let Ok(secs) = value.parse::<f64>() {
+        return Some((secs * 1000.0) as u64);
+    }
+    // Try HTTP-date (e.g. "Thu, 01 Dec 1994 16:00:00 GMT").
+    let target = httpdate::parse_http_date(value).ok()?;
+    let now = SystemTime::now();
+    let duration = target.duration_since(now).ok()?;
+    Some(duration.as_millis() as u64)
 }
 
 /// Pure mapping from HTTP status + body to [`ProviderError`].
@@ -1064,6 +1077,37 @@ mod tests {
             }
             other => panic!("expected RateLimited, got {other:?}"),
         }
+    }
+
+    // -- Retry-After parsing --
+
+    #[test]
+    fn parse_retry_after_seconds_integer() {
+        assert_eq!(parse_retry_after("30"), Some(30_000));
+    }
+
+    #[test]
+    fn parse_retry_after_seconds_fractional() {
+        assert_eq!(parse_retry_after("1.5"), Some(1_500));
+    }
+
+    #[test]
+    fn parse_retry_after_http_date() {
+        // Use a date far in the future so it's always after SystemTime::now().
+        let result = parse_retry_after("Sun, 01 Jan 2090 00:00:00 GMT");
+        assert!(result.is_some(), "should parse HTTP-date");
+        assert!(result.unwrap() > 0, "should be a positive duration");
+    }
+
+    #[test]
+    fn parse_retry_after_past_date_returns_none() {
+        // A date in the past yields None (duration_since would fail).
+        assert!(parse_retry_after("Mon, 01 Jan 1990 00:00:00 GMT").is_none());
+    }
+
+    #[test]
+    fn parse_retry_after_garbage_returns_none() {
+        assert!(parse_retry_after("not-a-date-or-number").is_none());
     }
 
     #[test]
