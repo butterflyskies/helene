@@ -487,7 +487,7 @@ async fn map_error_response(response: reqwest::Response, model: &ModelId) -> Pro
         .headers()
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| parse_retry_after(v));
+        .and_then(parse_retry_after);
     let body = response.text().await.unwrap_or_default();
 
     map_error(status, retry_after_ms, &body, model)
