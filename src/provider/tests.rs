@@ -14,7 +14,10 @@ fn arb_role() -> impl Strategy<Value = Role> {
 }
 
 fn arb_message() -> impl Strategy<Value = ChatMessage> {
-    (arb_role(), ".*").prop_map(|(role, content)| ChatMessage::new(role, content))
+    prop_oneof![
+        (arb_role(), ".*").prop_map(|(role, content)| ChatMessage::new(role, content)),
+        ("[a-z0-9_]{1,20}", ".*").prop_map(|(id, content)| ChatMessage::tool_result(id, content)),
+    ]
 }
 
 fn arb_model_id() -> impl Strategy<Value = ModelId> {
@@ -53,7 +56,11 @@ fn arb_tool_definition() -> impl Strategy<Value = ToolDefinition> {
 fn arb_response_content() -> impl Strategy<Value = ResponseContent> {
     prop_oneof![
         ".*".prop_map(ResponseContent::Text),
-        prop::collection::vec(arb_tool_call(), 1..=3).prop_map(ResponseContent::ToolCalls),
+        (
+            prop::collection::vec(arb_tool_call(), 1..=3),
+            prop::option::of(".*")
+        )
+            .prop_map(|(calls, text)| ResponseContent::ToolCalls { calls, text }),
     ]
 }
 
@@ -101,13 +108,44 @@ fn message_constructors() {
 
     let usr = ChatMessage::user("hello");
     assert_eq!(usr.role, Role::User);
+    assert_eq!(usr.content, "hello");
+    assert!(usr.tool_call_id.is_none());
+    assert!(usr.tool_calls.is_none());
 
     let ast = ChatMessage::assistant("hi there");
     assert_eq!(ast.role, Role::Assistant);
+    assert_eq!(ast.content, "hi there");
+    assert!(ast.tool_call_id.is_none());
+    assert!(ast.tool_calls.is_none());
 
     let tool = ChatMessage::tool(r#"{"result": 42}"#);
     assert_eq!(tool.role, Role::Tool);
     assert_eq!(tool.content, r#"{"result": 42}"#);
+    assert!(tool.tool_call_id.is_none());
+    assert!(tool.tool_calls.is_none());
+}
+
+#[test]
+fn tool_result_constructor() {
+    let msg = ChatMessage::tool_result("call_123", r#"{"result": 42}"#);
+    assert_eq!(msg.role, Role::Tool);
+    assert_eq!(msg.content, r#"{"result": 42}"#);
+    assert_eq!(msg.tool_call_id.as_deref(), Some("call_123"));
+    assert!(msg.tool_calls.is_none());
+}
+
+#[test]
+fn assistant_with_tool_calls_constructor() {
+    let calls = vec![ToolCall {
+        id: "call_1".into(),
+        name: "search".into(),
+        arguments: r#"{"q":"test"}"#.into(),
+    }];
+    let msg = ChatMessage::assistant_with_tool_calls("thinking...", calls.clone());
+    assert_eq!(msg.role, Role::Assistant);
+    assert_eq!(msg.content, "thinking...");
+    assert_eq!(msg.tool_calls.as_ref().unwrap(), &calls);
+    assert!(msg.tool_call_id.is_none());
 }
 
 #[test]
@@ -181,13 +219,16 @@ fn completion_response_tool_calls() {
         arguments: r#"{"city":"tokyo"}"#.into(),
     };
     let resp = CompletionResponse {
-        content: ResponseContent::ToolCalls(vec![tc]),
+        content: ResponseContent::ToolCalls {
+            calls: vec![tc],
+            text: None,
+        },
         model: ModelId::new("test-model"),
         usage: Usage::new(20, 10),
         stop_reason: StopReason::ToolUse,
     };
     match &resp.content {
-        ResponseContent::ToolCalls(calls) => {
+        ResponseContent::ToolCalls { calls, .. } => {
             assert_eq!(calls.len(), 1);
             assert_eq!(calls[0].name, "get_weather");
         }
@@ -274,10 +315,11 @@ proptest! {
     }
 
     #[test]
-    fn message_clone_preserves_role(msg in arb_message()) {
+    fn message_clone_preserves_fields(msg in arb_message()) {
         let cloned = msg.clone();
         prop_assert_eq!(msg.role, cloned.role);
         prop_assert_eq!(msg.content, cloned.content);
+        prop_assert_eq!(msg.tool_call_id, cloned.tool_call_id);
     }
 
     #[test]
