@@ -20,6 +20,11 @@ pub struct ChatMessage {
     pub content: String,
     /// For [`Role::Tool`] messages, the ID of the tool call this result belongs to.
     pub tool_call_id: Option<String>,
+    /// For [`Role::Assistant`] messages that contain tool invocations, the list
+    /// of tool calls the model made. Required for multi-turn tool-use
+    /// conversations: the Anthropic API expects the assistant turn to contain
+    /// the original `tool_use` content blocks when replaying the conversation.
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 /// A tool available to the model during inference.
@@ -60,7 +65,13 @@ pub struct Usage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResponseContent {
     Text(String),
-    ToolCalls(Vec<ToolCall>),
+    /// Tool invocations returned by the model. When the model emits text
+    /// alongside tool calls (e.g. "Let me look that up" before calling a
+    /// tool), the text is preserved in the `text` field.
+    ToolCalls {
+        calls: Vec<ToolCall>,
+        text: Option<String>,
+    },
 }
 
 /// A request to a model for completion.
@@ -132,6 +143,7 @@ impl ChatMessage {
             role,
             content: content.into(),
             tool_call_id: None,
+            tool_calls: None,
         }
     }
 
@@ -147,6 +159,24 @@ impl ChatMessage {
         Self::new(Role::Assistant, content)
     }
 
+    /// Create an assistant message that includes tool invocations.
+    ///
+    /// When replaying a multi-turn tool-use conversation, the assistant turn
+    /// must include the `tool_use` content blocks so the API can match them
+    /// against subsequent `tool_result` blocks. Use this constructor to build
+    /// that assistant turn from a previous [`CompletionResponse`].
+    pub fn assistant_with_tool_calls(
+        content: impl Into<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls: Some(tool_calls),
+        }
+    }
+
     pub fn tool(content: impl Into<String>) -> Self {
         Self::new(Role::Tool, content)
     }
@@ -157,6 +187,7 @@ impl ChatMessage {
             role: Role::Tool,
             content: content.into(),
             tool_call_id: Some(tool_call_id.into()),
+            tool_calls: None,
         }
     }
 }

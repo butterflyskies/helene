@@ -56,7 +56,8 @@ fn arb_tool_definition() -> impl Strategy<Value = ToolDefinition> {
 fn arb_response_content() -> impl Strategy<Value = ResponseContent> {
     prop_oneof![
         ".*".prop_map(ResponseContent::Text),
-        prop::collection::vec(arb_tool_call(), 1..=3).prop_map(ResponseContent::ToolCalls),
+        prop::collection::vec(arb_tool_call(), 1..=3)
+            .prop_map(|calls| ResponseContent::ToolCalls { calls, text: None }),
     ]
 }
 
@@ -112,6 +113,7 @@ fn message_constructors() {
     assert_eq!(tool.role, Role::Tool);
     assert_eq!(tool.content, r#"{"result": 42}"#);
     assert!(tool.tool_call_id.is_none());
+    assert!(tool.tool_calls.is_none());
 }
 
 #[test]
@@ -120,6 +122,21 @@ fn tool_result_constructor() {
     assert_eq!(msg.role, Role::Tool);
     assert_eq!(msg.content, r#"{"result": 42}"#);
     assert_eq!(msg.tool_call_id.as_deref(), Some("call_123"));
+    assert!(msg.tool_calls.is_none());
+}
+
+#[test]
+fn assistant_with_tool_calls_constructor() {
+    let calls = vec![ToolCall {
+        id: "call_1".into(),
+        name: "search".into(),
+        arguments: r#"{"q":"test"}"#.into(),
+    }];
+    let msg = ChatMessage::assistant_with_tool_calls("thinking...", calls.clone());
+    assert_eq!(msg.role, Role::Assistant);
+    assert_eq!(msg.content, "thinking...");
+    assert_eq!(msg.tool_calls.as_ref().unwrap(), &calls);
+    assert!(msg.tool_call_id.is_none());
 }
 
 #[test]
@@ -193,13 +210,16 @@ fn completion_response_tool_calls() {
         arguments: r#"{"city":"tokyo"}"#.into(),
     };
     let resp = CompletionResponse {
-        content: ResponseContent::ToolCalls(vec![tc]),
+        content: ResponseContent::ToolCalls {
+            calls: vec![tc],
+            text: None,
+        },
         model: ModelId::new("test-model"),
         usage: Usage::new(20, 10),
         stop_reason: StopReason::ToolUse,
     };
     match &resp.content {
-        ResponseContent::ToolCalls(calls) => {
+        ResponseContent::ToolCalls { calls, .. } => {
             assert_eq!(calls.len(), 1);
             assert_eq!(calls[0].name, "get_weather");
         }

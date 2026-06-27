@@ -171,10 +171,9 @@ enum ContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
 
-    /// Used when reconstructing assistant messages that contain tool calls.
-    /// Not constructed in the provider itself, but needed for conversation
-    /// replay and testing.
-    #[allow(dead_code)]
+    /// Tool invocation block. Constructed when building assistant messages
+    /// that carry tool calls (multi-turn tool-use conversations) and when
+    /// deserializing API responses in tests.
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -256,11 +255,28 @@ fn build_api_request(request: &CompletionRequest) -> Result<ApiRequest, Provider
                 );
             }
             Role::Assistant => {
-                push_or_merge(
-                    &mut messages,
-                    "assistant",
-                    MessageContent::Text(msg.content.clone()),
-                );
+                let content = match &msg.tool_calls {
+                    Some(calls) if !calls.is_empty() => {
+                        let mut blocks = Vec::new();
+                        if !msg.content.is_empty() {
+                            blocks.push(ContentBlock::Text {
+                                text: msg.content.clone(),
+                            });
+                        }
+                        for tc in calls {
+                            let input: Value =
+                                serde_json::from_str(&tc.arguments).unwrap_or_default();
+                            blocks.push(ContentBlock::ToolUse {
+                                id: tc.id.clone(),
+                                name: tc.name.clone(),
+                                input,
+                            });
+                        }
+                        MessageContent::Blocks(blocks)
+                    }
+                    _ => MessageContent::Text(msg.content.clone()),
+                };
+                push_or_merge(&mut messages, "assistant", content);
             }
             Role::Tool => {
                 let tool_use_id = msg
@@ -408,7 +424,15 @@ fn parse_api_response(resp: ApiResponse) -> Result<CompletionResponse, ProviderE
     let content = if tool_calls.is_empty() {
         ResponseContent::Text(text_parts.join(""))
     } else {
-        ResponseContent::ToolCalls(tool_calls)
+        let text = if text_parts.is_empty() {
+            None
+        } else {
+            Some(text_parts.join(""))
+        };
+        ResponseContent::ToolCalls {
+            calls: tool_calls,
+            text,
+        }
     };
 
     let stop_reason = match resp.stop_reason.as_deref() {
@@ -730,6 +754,60 @@ mod tests {
         }
     }
 
+    // -- Request building: assistant with tool calls (roundtrip) --
+
+    #[test]
+    fn assistant_with_tool_calls_emits_tool_use_blocks() {
+        let tool_calls = vec![ToolCall {
+            id: "toolu_01abc".into(),
+            name: "get_weather".into(),
+            arguments: r#"{"city":"Tokyo"}"#.into(),
+        }];
+        let req = simple_request(vec![
+            ChatMessage::user("What's the weather?"),
+            ChatMessage::assistant_with_tool_calls("Let me check.", tool_calls),
+            ChatMessage::tool_result("toolu_01abc", r#"{"temp": 72}"#),
+        ]);
+        let api_req = build_api_request(&req).unwrap();
+        let json = serde_json::to_value(&api_req).unwrap();
+
+        // Assistant message should have text + tool_use blocks.
+        let assistant_msg = &json["messages"][1];
+        assert_eq!(assistant_msg["role"], "assistant");
+        let blocks = assistant_msg["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "Let me check.");
+        assert_eq!(blocks[1]["type"], "tool_use");
+        assert_eq!(blocks[1]["id"], "toolu_01abc");
+        assert_eq!(blocks[1]["name"], "get_weather");
+        assert_eq!(blocks[1]["input"]["city"], "Tokyo");
+    }
+
+    #[test]
+    fn assistant_with_tool_calls_empty_text_omits_text_block() {
+        let tool_calls = vec![ToolCall {
+            id: "toolu_01".into(),
+            name: "search".into(),
+            arguments: r#"{"q":"rust"}"#.into(),
+        }];
+        let req = simple_request(vec![
+            ChatMessage::user("Search"),
+            ChatMessage::assistant_with_tool_calls("", tool_calls),
+            ChatMessage::tool_result("toolu_01", "found it"),
+        ]);
+        let api_req = build_api_request(&req).unwrap();
+        let json = serde_json::to_value(&api_req).unwrap();
+
+        let blocks = json["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(
+            blocks.len(),
+            1,
+            "empty text should not produce a text block"
+        );
+        assert_eq!(blocks[0]["type"], "tool_use");
+    }
+
     // -- Request building: tool definitions --
 
     #[test]
@@ -875,11 +953,12 @@ mod tests {
         let result = parse_api_response(resp).unwrap();
 
         match &result.content {
-            ResponseContent::ToolCalls(calls) => {
+            ResponseContent::ToolCalls { calls, text } => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].id, "toolu_01abc");
                 assert_eq!(calls[0].name, "get_weather");
                 assert_eq!(calls[0].arguments, r#"{"city":"Tokyo"}"#);
+                assert!(text.is_none(), "tool-only response should have no text");
             }
             other => panic!("expected ToolCalls, got {other:?}"),
         }
@@ -906,7 +985,7 @@ mod tests {
         let result = parse_api_response(resp).unwrap();
 
         match &result.content {
-            ResponseContent::ToolCalls(calls) => {
+            ResponseContent::ToolCalls { calls, .. } => {
                 assert_eq!(calls.len(), 2);
                 assert_eq!(calls[0].id, "toolu_01");
                 assert_eq!(calls[0].name, "search");
@@ -919,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_text_and_tool_use_returns_tool_calls() {
+    fn mixed_text_and_tool_use_preserves_both() {
         let resp = api_response(
             vec![
                 ContentBlock::Text {
@@ -935,12 +1014,12 @@ mod tests {
         );
         let result = parse_api_response(resp).unwrap();
 
-        // Tool calls take precedence over text.
         match &result.content {
-            ResponseContent::ToolCalls(calls) => {
+            ResponseContent::ToolCalls { calls, text } => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].id, "toolu_01");
                 assert_eq!(calls[0].name, "search");
+                assert_eq!(text.as_deref(), Some("Let me look that up."));
             }
             other => panic!("expected ToolCalls, got {other:?}"),
         }
