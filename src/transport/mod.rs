@@ -1,3 +1,4 @@
+pub mod http;
 mod types;
 
 pub use types::{ConnectionId, Envelope, TenantId};
