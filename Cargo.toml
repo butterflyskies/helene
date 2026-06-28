@@ -1,3 +1,7 @@
+[workspace]
+members = ["helene-parser"]
+exclude = ["kani-spike", "stateright-spike"]
+
 [package]
 name = "helene"
 version = "0.2.0"
@@ -11,6 +15,7 @@ keywords = ["mcp", "inference", "harness", "llm"]
 categories = ["api-bindings"]
 
 [dependencies]
+helene-parser = { path = "helene-parser" }
 base64 = "0.22"
 futures-util = { version = "0.3", default-features = false }
 hmac = "0.12"

@@ -43,6 +43,8 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use url::Url;
 
+use helene_parser::{SseEvent, SseParseError, SseParser};
+
 use super::{ConnectionId, Envelope, MessageTransport, TenantId, TransportError};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -213,78 +215,6 @@ impl HttpTransportConfig {
     }
 }
 
-// ── SSE parser ──────────────────────────────────────────────────
-
-/// Minimal SSE event parsed from the byte stream.
-#[derive(Debug, Default)]
-struct SseEvent {
-    event: Option<String>,
-    data: String,
-    /// Optional signature field (custom extension for HMAC).
-    signature: Option<String>,
-}
-
-/// Incremental SSE line parser.
-///
-/// Accumulates lines until a blank line signals the end of an event.
-struct SseParser {
-    current: SseEvent,
-    has_data: bool,
-}
-
-impl SseParser {
-    fn new() -> Self {
-        Self {
-            current: SseEvent::default(),
-            has_data: false,
-        }
-    }
-
-    /// Feed a single line (without trailing newline). Returns `Some`
-    /// when a blank line completes an event that has data.
-    fn feed_line(&mut self, line: &str) -> Option<SseEvent> {
-        if line.is_empty() {
-            // Blank line = event boundary.
-            if self.has_data {
-                let event = std::mem::take(&mut self.current);
-                self.has_data = false;
-                return Some(event);
-            }
-            return None;
-        }
-
-        // Comment lines start with ':'
-        if line.starts_with(':') {
-            return None;
-        }
-
-        let (field, value) = match line.find(':') {
-            Some(pos) => {
-                let value = &line[pos + 1..];
-                // Strip single leading space per SSE spec.
-                let value = value.strip_prefix(' ').unwrap_or(value);
-                (&line[..pos], value)
-            }
-            None => (line, ""),
-        };
-
-        match field {
-            "event" => self.current.event = Some(value.to_owned()),
-            "data" => {
-                if self.has_data {
-                    self.current.data.push('\n');
-                }
-                self.current.data.push_str(value);
-                self.has_data = true;
-            }
-            "signature" => self.current.signature = Some(value.to_owned()),
-            _ => {} // Ignore unknown fields per spec.
-        }
-
-        None
-    }
-}
-
 // ── Transport ───────────────────────────────────────────────────
 
 /// Streamable HTTP transport for MCP.
@@ -446,22 +376,34 @@ async fn run_sse_stream(
     }
 
     let mut stream = response.bytes_stream();
-    let mut parser = SseParser::new();
+    let mut parser = SseParser::new(max_event_data_bytes);
     let mut line_buf = Vec::<u8>::new();
 
     /// Dispatch a completed line to the parser and, if a full event
     /// is ready, process and forward it. Returns the appropriate
     /// outcome if the channel is closed or a limit is exceeded.
+    ///
+    /// Size limits are enforced by the parser during accumulation —
+    /// an `SseParseError::EventDataTooLarge` is returned before the
+    /// data is appended, preventing OOM from unbounded `data:` lines.
     async fn dispatch_line(
         line_buf: &mut Vec<u8>,
         parser: &mut SseParser,
         signer: Option<&TransportSigner>,
         tx: &mpsc::Sender<Result<Envelope, TransportError>>,
-        max_event_data_bytes: usize,
     ) -> Option<SseOutcome> {
         let line = String::from_utf8_lossy(line_buf);
-        if let Some(event) = parser.feed_line(&line) {
-            if event.data.len() > max_event_data_bytes {
+        match parser.feed_line(&line) {
+            Ok(Some(event)) => {
+                if let Some(result) = process_sse_event(&event, signer)
+                    && tx.send(result).await.is_err()
+                {
+                    return Some(SseOutcome::ChannelClosed);
+                }
+            }
+            Ok(None) => {}
+            Err(SseParseError::EventDataTooLarge { .. }) => {
+                parser.reset();
                 let _ = tx
                     .send(Err(TransportError::RecvFailed(
                         "SSE event data exceeds size limit".into(),
@@ -470,11 +412,6 @@ async fn run_sse_stream(
                 return Some(SseOutcome::Error(
                     "SSE event data exceeds size limit".into(),
                 ));
-            }
-            if let Some(result) = process_sse_event(&event, signer)
-                && tx.send(result).await.is_err()
-            {
-                return Some(SseOutcome::ChannelClosed);
             }
         }
         line_buf.clear();
@@ -504,7 +441,7 @@ async fn run_sse_stream(
                 }
                 // Standalone LF: dispatch the accumulated line.
                 if let Some(outcome) =
-                    dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes)
+                    dispatch_line(&mut line_buf, &mut parser, signer, tx)
                         .await
                 {
                     return outcome;
@@ -513,7 +450,7 @@ async fn run_sse_stream(
                 prev_cr = true;
                 // CR always terminates the current line.
                 if let Some(outcome) =
-                    dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes)
+                    dispatch_line(&mut line_buf, &mut parser, signer, tx)
                         .await
                 {
                     return outcome;
@@ -532,11 +469,11 @@ async fn run_sse_stream(
 
     // Stream ended — flush any trailing data.
     if !line_buf.is_empty() {
-        let _ = dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes).await;
+        let _ = dispatch_line(&mut line_buf, &mut parser, signer, tx).await;
     }
     // Flush parser in case there's an event without trailing blank line.
     line_buf.clear();
-    let _ = dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes).await;
+    let _ = dispatch_line(&mut line_buf, &mut parser, signer, tx).await;
 
     SseOutcome::Clean
 }
@@ -552,7 +489,7 @@ fn process_sse_event(
     // Only process "message" events (or events with no explicit type,
     // which default to "message" per the SSE spec). Other types like
     // "ping" or "heartbeat" are silently skipped.
-    let event_type = event.event.as_deref().unwrap_or("message");
+    let event_type = event.event_type.as_deref().unwrap_or("message");
     if event_type != "message" {
         return None;
     }
@@ -717,88 +654,94 @@ mod tests {
     use super::*;
 
     // ── SSE parser unit tests ───────────────────────────────────
+    //
+    // The parser lives in helene-parser; these tests exercise it
+    // through the re-export to catch integration issues.
+
+    // Use a generous limit for tests that don't exercise bounds.
+    const BIG: usize = 4 * 1024 * 1024;
 
     #[test]
     fn sse_parser_simple_message() {
-        let mut parser = SseParser::new();
-        assert!(parser.feed_line("data: hello").is_none());
-        let event = parser.feed_line("").unwrap();
+        let mut parser = SseParser::new(BIG);
+        assert!(matches!(parser.feed_line("data: hello"), Ok(None)));
+        let event = parser.feed_line("").unwrap().unwrap();
         assert_eq!(event.data, "hello");
-        assert!(event.event.is_none());
+        assert!(event.event_type.is_none());
     }
 
     #[test]
     fn sse_parser_named_event() {
-        let mut parser = SseParser::new();
-        parser.feed_line("event: message");
-        parser.feed_line("data: {\"test\": true}");
-        let event = parser.feed_line("").unwrap();
-        assert_eq!(event.event.as_deref(), Some("message"));
+        let mut parser = SseParser::new(BIG);
+        parser.feed_line("event: message").unwrap();
+        parser.feed_line("data: {\"test\": true}").unwrap();
+        let event = parser.feed_line("").unwrap().unwrap();
+        assert_eq!(event.event_type.as_deref(), Some("message"));
         assert_eq!(event.data, "{\"test\": true}");
     }
 
     #[test]
     fn sse_parser_multiline_data() {
-        let mut parser = SseParser::new();
-        parser.feed_line("data: line1");
-        parser.feed_line("data: line2");
-        parser.feed_line("data: line3");
-        let event = parser.feed_line("").unwrap();
+        let mut parser = SseParser::new(BIG);
+        parser.feed_line("data: line1").unwrap();
+        parser.feed_line("data: line2").unwrap();
+        parser.feed_line("data: line3").unwrap();
+        let event = parser.feed_line("").unwrap().unwrap();
         assert_eq!(event.data, "line1\nline2\nline3");
     }
 
     #[test]
     fn sse_parser_comment_ignored() {
-        let mut parser = SseParser::new();
-        parser.feed_line(": this is a comment");
-        parser.feed_line("data: actual data");
-        let event = parser.feed_line("").unwrap();
+        let mut parser = SseParser::new(BIG);
+        parser.feed_line(": this is a comment").unwrap();
+        parser.feed_line("data: actual data").unwrap();
+        let event = parser.feed_line("").unwrap().unwrap();
         assert_eq!(event.data, "actual data");
     }
 
     #[test]
     fn sse_parser_empty_blank_lines_ignored() {
-        let mut parser = SseParser::new();
-        assert!(parser.feed_line("").is_none());
-        assert!(parser.feed_line("").is_none());
+        let mut parser = SseParser::new(BIG);
+        assert!(parser.feed_line("").unwrap().is_none());
+        assert!(parser.feed_line("").unwrap().is_none());
     }
 
     #[test]
     fn sse_parser_signature_field() {
-        let mut parser = SseParser::new();
-        parser.feed_line("data: payload");
-        parser.feed_line("signature: abc123");
-        let event = parser.feed_line("").unwrap();
+        let mut parser = SseParser::new(BIG);
+        parser.feed_line("data: payload").unwrap();
+        parser.feed_line("signature: abc123").unwrap();
+        let event = parser.feed_line("").unwrap().unwrap();
         assert_eq!(event.data, "payload");
         assert_eq!(event.signature.as_deref(), Some("abc123"));
     }
 
     #[test]
     fn sse_parser_unknown_field_ignored() {
-        let mut parser = SseParser::new();
-        parser.feed_line("custom: ignored");
-        parser.feed_line("data: kept");
-        let event = parser.feed_line("").unwrap();
+        let mut parser = SseParser::new(BIG);
+        parser.feed_line("custom: ignored").unwrap();
+        parser.feed_line("data: kept").unwrap();
+        let event = parser.feed_line("").unwrap().unwrap();
         assert_eq!(event.data, "kept");
     }
 
     #[test]
     fn sse_parser_data_no_space_after_colon() {
-        let mut parser = SseParser::new();
-        parser.feed_line("data:nospace");
-        let event = parser.feed_line("").unwrap();
+        let mut parser = SseParser::new(BIG);
+        parser.feed_line("data:nospace").unwrap();
+        let event = parser.feed_line("").unwrap().unwrap();
         assert_eq!(event.data, "nospace");
     }
 
     #[test]
     fn sse_parser_consecutive_events() {
-        let mut parser = SseParser::new();
-        parser.feed_line("data: first");
-        let e1 = parser.feed_line("").unwrap();
+        let mut parser = SseParser::new(BIG);
+        parser.feed_line("data: first").unwrap();
+        let e1 = parser.feed_line("").unwrap().unwrap();
         assert_eq!(e1.data, "first");
 
-        parser.feed_line("data: second");
-        let e2 = parser.feed_line("").unwrap();
+        parser.feed_line("data: second").unwrap();
+        let e2 = parser.feed_line("").unwrap().unwrap();
         assert_eq!(e2.data, "second");
     }
 
@@ -960,7 +903,7 @@ mod tests {
         let data = serde_json::to_string(&wire).unwrap();
 
         let event = SseEvent {
-            event: Some("message".into()),
+            event_type: Some("message".into()),
             data,
             signature: None,
         };
@@ -979,7 +922,7 @@ mod tests {
         let wire = WireEnvelope::from_envelope(&env);
 
         let event = SseEvent {
-            event: None, // defaults to "message"
+            event_type: None, // defaults to "message"
             data: serde_json::to_string(&wire).unwrap(),
             signature: None,
         };
@@ -990,7 +933,7 @@ mod tests {
     #[test]
     fn process_event_unknown_type_skipped() {
         let event = SseEvent {
-            event: Some("ping".into()),
+            event_type: Some("ping".into()),
             data: "{}".into(),
             signature: None,
         };
@@ -1002,7 +945,7 @@ mod tests {
     #[test]
     fn process_event_invalid_json_rejected() {
         let event = SseEvent {
-            event: Some("message".into()),
+            event_type: Some("message".into()),
             data: "not json".into(),
             signature: None,
         };
@@ -1024,7 +967,7 @@ mod tests {
         let sig = signer.sign_hex(data.as_bytes());
 
         let event = SseEvent {
-            event: Some("message".into()),
+            event_type: Some("message".into()),
             data,
             signature: Some(sig),
         };
@@ -1037,7 +980,7 @@ mod tests {
     fn process_event_hmac_missing_signature() {
         let signer = TransportSigner::new(b"key".to_vec());
         let event = SseEvent {
-            event: Some("message".into()),
+            event_type: Some("message".into()),
             data: "{}".into(),
             signature: None,
         };
@@ -1052,7 +995,7 @@ mod tests {
     fn process_event_hmac_invalid_signature() {
         let signer = TransportSigner::new(b"key".to_vec());
         let event = SseEvent {
-            event: Some("message".into()),
+            event_type: Some("message".into()),
             data: "{\"tenant_id\":\"t\",\"seq\":0,\"payload\":\"\"}".into(),
             signature: Some("deadbeef".repeat(8)), // 64 hex chars = 32 bytes
         };
@@ -1811,7 +1754,7 @@ mod tests {
                 let wire = WireEnvelope::from_envelope(&env);
                 let data = serde_json::to_string(&wire).unwrap();
                 let event = SseEvent {
-                    event: Some("message".into()),
+                    event_type: Some("message".into()),
                     data,
                     signature: None,
                 };
@@ -1829,7 +1772,7 @@ mod tests {
                 let data = serde_json::to_string(&wire).unwrap();
                 let sig = signer.sign_hex(data.as_bytes());
                 let event = SseEvent {
-                    event: Some("message".into()),
+                    event_type: Some("message".into()),
                     data,
                     signature: Some(sig),
                 };

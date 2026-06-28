@@ -1,0 +1,12 @@
+[package]
+name = "helene-parser"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "SSE parser for helene — bounded, synchronous, Kani-verifiable"
+repository = "https://github.com/butterflyskies/helene"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[dependencies]
