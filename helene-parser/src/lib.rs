@@ -313,7 +313,7 @@ mod tests {
     fn multiline_accumulation_over_limit_rejected() {
         let mut parser = SseParser::new(8);
         parser.feed_line("data: abcd").unwrap(); // 4 bytes
-        // Next line would be 4 + 1('\n') + 4 = 9 > 8
+                                                 // Next line would be 4 + 1('\n') + 4 = 9 > 8
         let err = parser.feed_line("data: efgh").unwrap_err();
         assert_eq!(
             err,

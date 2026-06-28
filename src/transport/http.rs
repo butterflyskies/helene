@@ -440,19 +440,13 @@ async fn run_sse_stream(
                     continue;
                 }
                 // Standalone LF: dispatch the accumulated line.
-                if let Some(outcome) =
-                    dispatch_line(&mut line_buf, &mut parser, signer, tx)
-                        .await
-                {
+                if let Some(outcome) = dispatch_line(&mut line_buf, &mut parser, signer, tx).await {
                     return outcome;
                 }
             } else if byte == b'\r' {
                 prev_cr = true;
                 // CR always terminates the current line.
-                if let Some(outcome) =
-                    dispatch_line(&mut line_buf, &mut parser, signer, tx)
-                        .await
-                {
+                if let Some(outcome) = dispatch_line(&mut line_buf, &mut parser, signer, tx).await {
                     return outcome;
                 }
             } else {
