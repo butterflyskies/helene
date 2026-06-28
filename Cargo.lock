@@ -378,6 +378,7 @@ version = "0.2.0"
 dependencies = [
  "base64",
  "futures-util",
+ "helene-parser",
  "hmac",
  "httpdate",
  "pretty_assertions",
@@ -394,6 +395,10 @@ dependencies = [
  "wiremock",
  "zeroize",
 ]
+
+[[package]]
+name = "helene-parser"
+version = "0.1.0"
 
 [[package]]
 name = "hermit-abi"
