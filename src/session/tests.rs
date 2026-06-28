@@ -58,11 +58,14 @@ impl InferenceProvider for ToolProvider {
     ) -> impl Future<Output = Result<CompletionResponse, ProviderError>> + Send {
         async {
             Ok(CompletionResponse {
-                content: ResponseContent::ToolCalls(vec![ToolCall {
-                    id: "call_1".into(),
-                    name: "get_weather".into(),
-                    arguments: r#"{"city":"seattle"}"#.into(),
-                }]),
+                content: ResponseContent::ToolCalls {
+                    calls: vec![ToolCall {
+                        id: "call_1".into(),
+                        name: "get_weather".into(),
+                        arguments: r#"{"city":"seattle"}"#.into(),
+                    }],
+                    text: None,
+                },
                 model: ModelId::new("tool-1"),
                 stop_reason: StopReason::ToolUse,
                 usage: Usage::new(10, 5),
@@ -94,7 +97,7 @@ fn test_message(content: &str) -> Message {
 }
 
 fn test_config() -> SessionConfig {
-    SessionConfig::new(TenantId("lain".into()), ModelId::new("test-model"), 4096)
+    SessionConfig::new(TenantId::from("lain"), ModelId::new("test-model"), 4096)
 }
 
 fn test_host() -> InMemorySessionHost<HmacVerifier, EchoProvider> {
@@ -114,24 +117,24 @@ async fn register_and_list_tenants() {
 
     let tenants = host.tenants().await;
     assert_eq!(tenants.len(), 1);
-    assert_eq!(tenants[0].0, "lain");
+    assert_eq!(tenants[0].as_str(), "lain");
 }
 
 #[tokio::test]
 async fn register_multiple_tenants() {
     let host = test_host();
 
-    let cfg_a = SessionConfig::new(TenantId("ari".into()), ModelId::new("m"), 4096);
-    let cfg_b = SessionConfig::new(TenantId("vesper".into()), ModelId::new("m"), 4096);
+    let cfg_a = SessionConfig::new(TenantId::from("ari"), ModelId::new("m"), 4096);
+    let cfg_b = SessionConfig::new(TenantId::from("vesper"), ModelId::new("m"), 4096);
 
     host.register_tenant(cfg_a).await.unwrap();
     host.register_tenant(cfg_b).await.unwrap();
 
     let mut tenants = host.tenants().await;
-    tenants.sort_by(|a, b| a.0.cmp(&b.0));
+    tenants.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     assert_eq!(tenants.len(), 2);
-    assert_eq!(tenants[0].0, "ari");
-    assert_eq!(tenants[1].0, "vesper");
+    assert_eq!(tenants[0].as_str(), "ari");
+    assert_eq!(tenants[1].as_str(), "vesper");
 }
 
 #[tokio::test]
@@ -140,14 +143,14 @@ async fn remove_tenant() {
     host.register_tenant(test_config()).await.unwrap();
     assert_eq!(host.tenants().await.len(), 1);
 
-    host.remove_tenant(&TenantId("lain".into())).await.unwrap();
+    host.remove_tenant(&TenantId::from("lain")).await.unwrap();
     assert!(host.tenants().await.is_empty());
 }
 
 #[tokio::test]
 async fn remove_nonexistent_tenant() {
     let host = test_host();
-    let result = host.remove_tenant(&TenantId("ghost".into())).await;
+    let result = host.remove_tenant(&TenantId::from("ghost")).await;
     assert!(matches!(result, Err(SessionError::TenantNotFound(_))));
 }
 
@@ -158,7 +161,7 @@ async fn process_message_echoes() {
 
     let msg = test_message("hello world");
     let response = host
-        .process_message(&TenantId("lain".into()), msg)
+        .process_message(&TenantId::from("lain"), msg)
         .await
         .unwrap();
 
@@ -172,7 +175,7 @@ async fn process_message_echoes() {
 async fn process_message_increments_counter() {
     let host = test_host();
     host.register_tenant(test_config()).await.unwrap();
-    let tenant = TenantId("lain".into());
+    let tenant = TenantId::from("lain");
 
     host.process_message(&tenant, test_message("one"))
         .await
@@ -189,7 +192,7 @@ async fn process_message_increments_counter() {
 async fn process_message_updates_last_message_time() {
     let host = test_host();
     host.register_tenant(test_config()).await.unwrap();
-    let tenant = TenantId("lain".into());
+    let tenant = TenantId::from("lain");
 
     let health_before = host.health(&tenant).await.unwrap();
     assert!(health_before.last_message_at_millis.is_none());
@@ -206,7 +209,7 @@ async fn process_message_updates_last_message_time() {
 async fn process_message_unknown_tenant() {
     let host = test_host();
     let result = host
-        .process_message(&TenantId("nobody".into()), test_message("hi"))
+        .process_message(&TenantId::from("nobody"), test_message("hi"))
         .await;
     assert!(matches!(result, Err(SessionError::TenantNotFound(_))));
 }
@@ -215,7 +218,7 @@ async fn process_message_unknown_tenant() {
 async fn process_appends_to_context() {
     let host = test_host();
     host.register_tenant(test_config()).await.unwrap();
-    let tenant = TenantId("lain".into());
+    let tenant = TenantId::from("lain");
 
     host.process_message(&tenant, test_message("first"))
         .await
@@ -237,7 +240,7 @@ async fn health_reports_connected() {
     let host = test_host();
     host.register_tenant(test_config()).await.unwrap();
 
-    let health = host.health(&TenantId("lain".into())).await.unwrap();
+    let health = host.health(&TenantId::from("lain")).await.unwrap();
     assert!(health.connected);
     assert_eq!(health.messages_processed, 0);
     assert_eq!(health.verification_failures, 0);
@@ -249,14 +252,14 @@ async fn health_reports_disconnected() {
     host.register_tenant(test_config()).await.unwrap();
     host.set_connected(false);
 
-    let health = host.health(&TenantId("lain".into())).await.unwrap();
+    let health = host.health(&TenantId::from("lain")).await.unwrap();
     assert!(!health.connected);
 }
 
 #[tokio::test]
 async fn health_unknown_tenant() {
     let host = test_host();
-    let result = host.health(&TenantId("ghost".into())).await;
+    let result = host.health(&TenantId::from("ghost")).await;
     assert!(matches!(result, Err(SessionError::TenantNotFound(_))));
 }
 
@@ -264,7 +267,7 @@ async fn health_unknown_tenant() {
 async fn verification_failure_tracking() {
     let host = test_host();
     host.register_tenant(test_config()).await.unwrap();
-    let tenant = TenantId("lain".into());
+    let tenant = TenantId::from("lain");
 
     host.record_verification_failure(&tenant).await;
     host.record_verification_failure(&tenant).await;
@@ -321,11 +324,14 @@ async fn extract_text_response() {
 #[tokio::test]
 async fn extract_tool_call_response() {
     let response = CompletionResponse {
-        content: ResponseContent::ToolCalls(vec![ToolCall {
-            id: "c1".into(),
-            name: "search".into(),
-            arguments: "{}".into(),
-        }]),
+        content: ResponseContent::ToolCalls {
+            calls: vec![ToolCall {
+                id: "c1".into(),
+                name: "search".into(),
+                arguments: "{}".into(),
+            }],
+            text: None,
+        },
         model: ModelId::new("m"),
         stop_reason: StopReason::ToolUse,
         usage: Usage::new(1, 1),
@@ -342,7 +348,7 @@ async fn system_prompt_in_config() {
     host.register_tenant(config).await.unwrap();
 
     let response = host
-        .process_message(&TenantId("lain".into()), test_message("hi"))
+        .process_message(&TenantId::from("lain"), test_message("hi"))
         .await
         .unwrap();
 
@@ -359,7 +365,7 @@ async fn temperature_in_config() {
     host.register_tenant(config).await.unwrap();
 
     let response = host
-        .process_message(&TenantId("lain".into()), test_message("hi"))
+        .process_message(&TenantId::from("lain"), test_message("hi"))
         .await
         .unwrap();
 
@@ -372,7 +378,7 @@ async fn provider_error_propagates() {
     host.register_tenant(test_config()).await.unwrap();
 
     let result = host
-        .process_message(&TenantId("lain".into()), test_message("hi"))
+        .process_message(&TenantId::from("lain"), test_message("hi"))
         .await;
 
     assert!(matches!(result, Err(SessionError::Provider(_))));
@@ -384,15 +390,12 @@ async fn tool_call_response_handling() {
     host.register_tenant(test_config()).await.unwrap();
 
     let response = host
-        .process_message(
-            &TenantId("lain".into()),
-            test_message("what's the weather?"),
-        )
+        .process_message(&TenantId::from("lain"), test_message("what's the weather?"))
         .await
         .unwrap();
 
     match &response.content {
-        ResponseContent::ToolCalls(calls) => assert_eq!(calls[0].name, "get_weather"),
+        ResponseContent::ToolCalls { calls, .. } => assert_eq!(calls[0].name, "get_weather"),
         _ => panic!("expected tool call response"),
     }
 }
@@ -404,20 +407,20 @@ async fn multi_tenant_isolation() {
         EchoProvider::new(),
     );
 
-    let cfg_a = SessionConfig::new(TenantId("ari".into()), ModelId::new("m"), 4096)
+    let cfg_a = SessionConfig::new(TenantId::from("ari"), ModelId::new("m"), 4096)
         .with_system_prompt("You are Ari.");
-    let cfg_b = SessionConfig::new(TenantId("lain".into()), ModelId::new("m"), 4096)
+    let cfg_b = SessionConfig::new(TenantId::from("lain"), ModelId::new("m"), 4096)
         .with_system_prompt("You are Lain.");
 
     host.register_tenant(cfg_a).await.unwrap();
     host.register_tenant(cfg_b).await.unwrap();
 
-    host.process_message(&TenantId("ari".into()), test_message("hello from ari"))
+    host.process_message(&TenantId::from("ari"), test_message("hello from ari"))
         .await
         .unwrap();
 
-    let health_ari = host.health(&TenantId("ari".into())).await.unwrap();
-    let health_lain = host.health(&TenantId("lain".into())).await.unwrap();
+    let health_ari = host.health(&TenantId::from("ari")).await.unwrap();
+    let health_lain = host.health(&TenantId::from("lain")).await.unwrap();
 
     assert_eq!(health_ari.messages_processed, 1);
     assert_eq!(health_lain.messages_processed, 0);

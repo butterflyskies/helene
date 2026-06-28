@@ -126,7 +126,7 @@ where
         // Append assistant response to context for multi-turn conversations.
         let assistant_content = match &response.content {
             ResponseContent::Text(text) => text.clone(),
-            ResponseContent::ToolCalls(calls) => format!("{calls:?}"),
+            ResponseContent::ToolCalls { calls, .. } => format!("{calls:?}"),
         };
 
         {
@@ -165,7 +165,7 @@ impl ProcessResult {
     /// Extract a process result from a completion response.
     pub fn from_response(response: &CompletionResponse) -> Self {
         match &response.content {
-            ResponseContent::ToolCalls(calls) => {
+            ResponseContent::ToolCalls { calls, .. } => {
                 if let Some(call) = calls.first() {
                     ProcessResult::ToolCall {
                         id: call.id.clone(),
