@@ -559,12 +559,16 @@ impl MessageTransport for HttpTransport {
 
         // Best-effort DELETE to terminate the session.
         if let Some(ref sid) = *self.session_id.lock().await {
-            let _ = self
+            let mut req = self
                 .client
                 .delete(self.config.endpoint.as_str())
-                .header("Mcp-Session-Id", sid.as_str())
-                .send()
-                .await;
+                .header("Mcp-Session-Id", sid.as_str());
+
+            if let Some(ref signer) = self.signer {
+                req = req.header("X-Signature", signer.sign_hex(&[]));
+            }
+
+            let _ = req.send().await;
         }
 
         *self.session_id.lock().await = None;
@@ -1675,6 +1679,119 @@ mod tests {
                 let received = transport.recv().await.unwrap();
                 assert_eq!(&received, expected);
             }
+
+            transport.disconnect().await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn disconnect_signs_delete_when_hmac_configured() {
+            let server = MockServer::start().await;
+
+            // SSE GET returns empty stream.
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string("")
+                        .insert_header("content-type", "text/event-stream"),
+                )
+                .mount(&server)
+                .await;
+
+            // POST returns a session ID so disconnect will issue a DELETE.
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(200).insert_header("Mcp-Session-Id", "sess-hmac-delete"),
+                )
+                .mount(&server)
+                .await;
+
+            // Expect DELETE with X-Signature header.
+            Mock::given(method("DELETE"))
+                .and(header_exists("X-Signature"))
+                .and(header("Mcp-Session-Id", "sess-hmac-delete"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let config = HttpTransportConfig::new(
+                Url::parse(&server.uri()).unwrap(),
+                TenantId::from("test"),
+            )
+            .with_hmac_key(b"delete-sign-key".to_vec());
+
+            let mut transport = HttpTransport::new(config);
+            transport.connect().await.unwrap();
+
+            // Send a message so the session ID is captured.
+            let env = Envelope {
+                tenant_id: TenantId::from("t"),
+                seq: 0,
+                payload: vec![],
+            };
+            transport.send(&env).await.unwrap();
+
+            transport.disconnect().await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn disconnect_omits_signature_when_no_hmac() {
+            use wiremock::matchers::header_exists;
+
+            let server = MockServer::start().await;
+
+            // SSE GET returns empty stream.
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string("")
+                        .insert_header("content-type", "text/event-stream"),
+                )
+                .mount(&server)
+                .await;
+
+            // POST returns a session ID so disconnect will issue a DELETE.
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(200).insert_header("Mcp-Session-Id", "sess-no-hmac"),
+                )
+                .mount(&server)
+                .await;
+
+            // Expect DELETE WITHOUT X-Signature header.
+            // We mount a mock that requires X-Signature and expect 0 hits,
+            // plus a catch-all DELETE that expects exactly 1 hit.
+            Mock::given(method("DELETE"))
+                .and(header_exists("X-Signature"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .named("delete-with-signature (should not match)")
+                .mount(&server)
+                .await;
+
+            Mock::given(method("DELETE"))
+                .and(header("Mcp-Session-Id", "sess-no-hmac"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .named("delete-without-signature")
+                .mount(&server)
+                .await;
+
+            // No HMAC key configured.
+            let config = HttpTransportConfig::new(
+                Url::parse(&server.uri()).unwrap(),
+                TenantId::from("test"),
+            );
+            let mut transport = HttpTransport::new(config);
+            transport.connect().await.unwrap();
+
+            // Send a message to capture the session ID.
+            let env = Envelope {
+                tenant_id: TenantId::from("t"),
+                seq: 0,
+                payload: vec![],
+            };
+            transport.send(&env).await.unwrap();
 
             transport.disconnect().await.unwrap();
         }
