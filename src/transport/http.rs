@@ -380,7 +380,10 @@ impl HttpTransport {
                 match result {
                     SseOutcome::Clean => break,
                     SseOutcome::ChannelClosed => break,
-                    SseOutcome::Error(_e) => {
+                    SseOutcome::Error { message: _e, had_data } => {
+                        if had_data {
+                            retries = 0;
+                        }
                         retries += 1;
                         if retries > max_retries {
                             let _ = tx
@@ -406,7 +409,11 @@ enum SseOutcome {
     /// The internal channel was closed (transport disconnected).
     ChannelClosed,
     /// A retryable error occurred.
-    Error(String),
+    ///
+    /// `had_data` indicates whether the stream successfully delivered
+    /// at least one envelope before the error, which is used to reset
+    /// the retry counter (a productive stream proves connectivity).
+    Error { message: String, had_data: bool },
 }
 
 /// Run a single SSE stream connection, feeding envelopes into `tx`.
@@ -431,11 +438,19 @@ async fn run_sse_stream(
 
     let response = match req.send().await {
         Ok(r) => r,
-        Err(e) => return SseOutcome::Error(format!("SSE GET failed: {e}")),
+        Err(e) => {
+            return SseOutcome::Error {
+                message: format!("SSE GET failed: {e}"),
+                had_data: false,
+            }
+        }
     };
 
     if !response.status().is_success() {
-        return SseOutcome::Error(format!("SSE GET returned {}", response.status()));
+        return SseOutcome::Error {
+            message: format!("SSE GET returned {}", response.status()),
+            had_data: false,
+        };
     }
 
     // Capture session ID from response if present.
@@ -448,16 +463,22 @@ async fn run_sse_stream(
     let mut stream = response.bytes_stream();
     let mut parser = SseParser::new();
     let mut line_buf = Vec::<u8>::new();
+    let mut had_data = false;
 
     /// Dispatch a completed line to the parser and, if a full event
     /// is ready, process and forward it. Returns the appropriate
     /// outcome if the channel is closed or a limit is exceeded.
+    ///
+    /// Sets `*had_data = true` when an envelope is successfully
+    /// forwarded to the channel, so the caller can distinguish
+    /// productive streams from ones that failed before delivering data.
     async fn dispatch_line(
         line_buf: &mut Vec<u8>,
         parser: &mut SseParser,
         signer: Option<&TransportSigner>,
         tx: &mpsc::Sender<Result<Envelope, TransportError>>,
         max_event_data_bytes: usize,
+        had_data: &mut bool,
     ) -> Option<SseOutcome> {
         let line = String::from_utf8_lossy(line_buf);
         if let Some(event) = parser.feed_line(&line) {
@@ -467,14 +488,19 @@ async fn run_sse_stream(
                         "SSE event data exceeds size limit".into(),
                     )))
                     .await;
-                return Some(SseOutcome::Error(
-                    "SSE event data exceeds size limit".into(),
-                ));
+                return Some(SseOutcome::Error {
+                    message: "SSE event data exceeds size limit".into(),
+                    had_data: *had_data,
+                });
             }
-            if let Some(result) = process_sse_event(&event, signer)
-                && tx.send(result).await.is_err()
-            {
-                return Some(SseOutcome::ChannelClosed);
+            if let Some(result) = process_sse_event(&event, signer) {
+                let is_ok = result.is_ok();
+                if tx.send(result).await.is_err() {
+                    return Some(SseOutcome::ChannelClosed);
+                }
+                if is_ok {
+                    *had_data = true;
+                }
             }
         }
         line_buf.clear();
@@ -489,7 +515,12 @@ async fn run_sse_stream(
     while let Some(chunk_result) = stream.next().await {
         let chunk = match chunk_result {
             Ok(c) => c,
-            Err(e) => return SseOutcome::Error(format!("SSE stream read error: {e}")),
+            Err(e) => {
+                return SseOutcome::Error {
+                    message: format!("SSE stream read error: {e}"),
+                    had_data,
+                }
+            }
         };
 
         // SSE is line-oriented. Per WHATWG spec §9.2, lines may be
@@ -504,7 +535,7 @@ async fn run_sse_stream(
                 }
                 // Standalone LF: dispatch the accumulated line.
                 if let Some(outcome) =
-                    dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes)
+                    dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes, &mut had_data)
                         .await
                 {
                     return outcome;
@@ -513,7 +544,7 @@ async fn run_sse_stream(
                 prev_cr = true;
                 // CR always terminates the current line.
                 if let Some(outcome) =
-                    dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes)
+                    dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes, &mut had_data)
                         .await
                 {
                     return outcome;
@@ -521,9 +552,12 @@ async fn run_sse_stream(
             } else {
                 prev_cr = false;
                 if line_buf.len() >= max_line_bytes {
-                    return SseOutcome::Error(format!(
-                        "SSE line exceeds {max_line_bytes} byte limit"
-                    ));
+                    return SseOutcome::Error {
+                        message: format!(
+                            "SSE line exceeds {max_line_bytes} byte limit"
+                        ),
+                        had_data,
+                    };
                 }
                 line_buf.push(byte);
             }
@@ -532,11 +566,11 @@ async fn run_sse_stream(
 
     // Stream ended — flush any trailing data.
     if !line_buf.is_empty() {
-        let _ = dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes).await;
+        let _ = dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes, &mut had_data).await;
     }
     // Flush parser in case there's an event without trailing blank line.
     line_buf.clear();
-    let _ = dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes).await;
+    let _ = dispatch_line(&mut line_buf, &mut parser, signer, tx, max_event_data_bytes, &mut had_data).await;
 
     SseOutcome::Clean
 }
@@ -1629,6 +1663,182 @@ mod tests {
                 .expect("recv failed");
 
             assert_eq!(received, env);
+
+            transport.disconnect().await.unwrap();
+        }
+
+        // ── Retry-reset tests ────────────────────────────────────
+
+        #[tokio::test]
+        async fn retry_counter_resets_after_productive_stream() {
+            // Scenario: max_retries = 2 but we accumulate more than 2
+            // total errors across the transport's lifetime. Without the
+            // retry-reset fix, the listener would die after the 3rd
+            // error even though the middle connection was productive.
+            //
+            // Timeline:
+            //   1. GET → 500  (error, no data → retries=1)
+            //   2. GET → 200 with data, then stream ends (had_data=true → retries reset to 0, then 1)
+            //   3. GET → 200 with data (succeeds, stream ends cleanly)
+            //
+            // Without the fix, retry 1 + retry from stream-end = 2,
+            // then the 3rd attempt would never happen because
+            // retries(3) > max_retries(2).
+
+            let server = MockServer::start().await;
+
+            let env1 = Envelope {
+                tenant_id: TenantId::from("t"),
+                seq: 1,
+                payload: vec![10],
+            };
+            let env2 = Envelope {
+                tenant_id: TenantId::from("t"),
+                seq: 2,
+                payload: vec![20],
+            };
+
+            // Request 1: fails with 500.
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(500))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+
+            // Request 2: succeeds with env1, then stream ends (empty
+            // response after the event triggers a reconnect because
+            // `run_sse_stream` returns `Clean` when the stream ends
+            // normally — so we need to make the stream error *after*
+            // delivering data to test the reset path).
+            //
+            // Wiremock can't simulate mid-stream errors, but the SSE
+            // stream ending cleanly returns `SseOutcome::Clean` which
+            // breaks the loop — it doesn't trigger retry at all. To
+            // test the retry reset, we need the stream to error after
+            // delivering data.
+            //
+            // Strategy: serve env1 in a response that has an invalid
+            // trailing event (bad UTF-8 won't work via wiremock since
+            // it uses Strings). Instead, we use a different approach:
+            //
+            // We use two normal responses (each with one envelope) and
+            // one initial 500. The 500 costs 1 retry. After that, both
+            // successful streams return `Clean` and break the loop.
+            // That only tests 1 retry total, not the reset.
+            //
+            // Better strategy: use 3 errors with a productive stream
+            // in the middle. max_retries=2 means without reset we'd
+            // die on the 3rd error:
+            //   1. GET → 500 (retries=1)
+            //   2. GET → 200 with env1 + invalid trailing data that
+            //      produces an error after data was received
+            //   3. GET → 500 (without reset: retries=3 > 2, dead.
+            //                 with reset: retries=0→1 from step 2
+            //                 reset, then +1 = 2, not > 2, survives)
+            //   4. GET → 200 with env2
+            //
+            // For step 2 we need a stream that delivers data then
+            // errors. We can't do a mid-stream network error with
+            // wiremock, but we CAN craft an SSE body that exceeds
+            // `max_event_data_bytes` after a valid event — the size
+            // limit check in `dispatch_line` returns
+            // `SseOutcome::Error` with `had_data: true`.
+
+            // Reset the mock server for precise control.
+            server.reset().await;
+
+            let sse_body_with_oversized_trailing = {
+                let mut body = make_sse_body(std::slice::from_ref(&env1));
+                // Append an oversized event that will trigger the
+                // data-size limit error after env1 was already sent.
+                body.push_str("event: message\ndata: ");
+                // 100 bytes > our 50-byte limit below.
+                body.push_str(&"X".repeat(100));
+                body.push_str("\n\n");
+                body
+            };
+
+            let sse_body_final = make_sse_body(std::slice::from_ref(&env2));
+
+            // Wiremock matches mocks in FIFO order (first mounted
+            // wins among matching, non-exhausted mocks). Mount in
+            // the order we want them consumed:
+
+            // Request 1: fails with 500.
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(500))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            // Request 2: delivers env1 then triggers oversized error.
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(sse_body_with_oversized_trailing)
+                        .insert_header("content-type", "text/event-stream"),
+                )
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            // Request 3: fails with 500 (this is the critical retry —
+            // without reset this would be retry #3 and exceed limit).
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(500))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            // Request 4 (final catch-all): succeeds with env2.
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(sse_body_final)
+                        .insert_header("content-type", "text/event-stream"),
+                )
+                .mount(&server)
+                .await;
+
+            let mut config = HttpTransportConfig::new(
+                Url::parse(&server.uri()).unwrap(),
+                TenantId::from("test"),
+            );
+            config.reconnect_base_delay = Duration::from_millis(10);
+            config.reconnect_max_retries = 2;
+            // Small limit so the oversized trailing event triggers an error.
+            config.max_event_data_bytes = 50;
+
+            let mut transport = HttpTransport::new(config);
+            transport.connect().await.unwrap();
+
+            // Receive env1 from the second connection (after first 500).
+            let received1 = tokio::time::timeout(Duration::from_secs(5), transport.recv())
+                .await
+                .expect("recv timed out for env1")
+                .expect("recv failed for env1");
+            assert_eq!(received1, env1);
+
+            // The oversized event error is forwarded to the channel.
+            let err = tokio::time::timeout(Duration::from_secs(5), transport.recv())
+                .await
+                .expect("recv timed out for error")
+                .expect_err("expected error from oversized event");
+            assert!(
+                matches!(err, TransportError::RecvFailed(_)),
+                "expected RecvFailed, got {err:?}"
+            );
+
+            // Receive env2 from the fourth connection (after the
+            // third 500 that would have been fatal without reset).
+            let received2 = tokio::time::timeout(Duration::from_secs(5), transport.recv())
+                .await
+                .expect("recv timed out for env2")
+                .expect("recv failed for env2");
+            assert_eq!(received2, env2);
 
             transport.disconnect().await.unwrap();
         }
